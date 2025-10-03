@@ -6,3 +6,4 @@ certifi
 json5
 openpyxl
 typing
+fredapi
