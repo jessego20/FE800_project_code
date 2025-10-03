@@ -5,3 +5,4 @@ urllib3
 certifi
 json5
 openpyxl
+typing

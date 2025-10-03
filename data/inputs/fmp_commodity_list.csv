@@ -1,0 +1,12 @@
+symbol,name,exchange,tradeMonth,currency
+ALIUSD,Aluminum Futures,,Nov,USD
+GCUSD,Gold Futures,,Dec,USD
+KEUSX,Wheat Futures,,Dec,USX
+ZCUSX,Corn Futures,,Dec,USX
+HGUSD,Copper,,Dec,USD
+SBUSX,Sugar,,Mar,USX
+ZSUSX,Soybean Futures,,Nov,USX
+LEUSX,Live Cattle Futures,,Oct,USX
+NGUSD,Natural Gas,,Oct,USD
+KCUSX,Coffee,,Dec,USX
+BZUSD,Brent Crude Oil,,Sep,USD
