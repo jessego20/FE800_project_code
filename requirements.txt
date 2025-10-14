@@ -7,3 +7,4 @@ json5
 openpyxl
 typing
 fredapi
+python-dotenv

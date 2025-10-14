@@ -1,2 +1,0 @@
-FMP_API_KEY = 'yvhf6ehjpcnRzPtLwPi3pEOhPAhE9RwF'
-FRED_API_KEY = '2d2b89179a40c94ebab6c79eac60ea61'
