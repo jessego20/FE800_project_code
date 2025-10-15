@@ -8,3 +8,7 @@ openpyxl
 typing
 fredapi
 python-dotenv
+ipython
+scipy
+statsmodels
+python-dotenv
