@@ -12,3 +12,8 @@ ipython
 scipy
 statsmodels
 python-dotenv
+plotly
+ipython
+nbformat
+matplotlib
+seaborn
