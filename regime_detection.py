@@ -749,7 +749,7 @@ class KAMA_MSR:
         kama_params : dict, optional
             KAMA parameters: {'n': 10, 'n_fast': 2, 'n_slow': 30}
         msr_params : dict, optional
-            MSR parameters: {'n_regimes': 2, 'n_samples': 1000, 'burnin': 200}
+            MSR parameters: {'n_regimes': 2, 'n_samples': 500, 'burnin': 100, 'thin': 1,}
             Note: If use_three_state_msr=True, n_regimes will be overridden to 3
         filter_params : dict, optional
             Filter parameters: {'n_lookback': 20, 'gamma': 1.0}
@@ -757,12 +757,12 @@ class KAMA_MSR:
             Whether to use 3-state MSR (low/medium/high variance) instead of 2-state
             Warning: Paper notes 3-state MSR can be unstable and lead to excessive regime switching
         """
-        # Initialize KAMA component (assumes KAMA is in the same script)
+        # Initialize KAMA component
         kama_defaults = {'n': 10, 'n_fast': 2, 'n_slow': 30}
         kama_params = kama_params or kama_defaults
         self.kama = KAMA(**kama_params)
         
-        # Initialize MSR component (assumes MarkovSwitchingModel is in the same script)
+        # Initialize MSR component
         msr_defaults = {'n_regimes': 2}
         msr_params = msr_params or msr_defaults
         
@@ -899,7 +899,7 @@ class KAMA_MSR:
         
         # Step 1: Fit MSR model for variance regime detection
         print(f"\n[1/4] Fitting {self.msr.n_regimes}-state MSR model for variance regimes...")
-        msr_defaults = {'n_samples': 1000, 'burnin': 200, 'verbose': msr_verbose}
+        msr_defaults = {'n_samples': 500, 'burnin': 100, 'thin': 1, 'verbose': msr_verbose}
         msr_defaults.update(msr_fit_kwargs)
         self.msr.fit(self.returns, **msr_defaults)
         
