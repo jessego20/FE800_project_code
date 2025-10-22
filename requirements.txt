@@ -18,4 +18,3 @@ nbformat
 matplotlib
 seaborn
 numba
-pickle

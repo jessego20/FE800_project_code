@@ -494,78 +494,78 @@ class MarkovSwitchingModel:
                             where=mask, alpha=0.3, color=colors[i], label=f'Regime {i}')
         ax1.set_title(f'{data_name}: Returns with Estimated Regimes')
         ax1.set_ylabel('Daily Log Returns')
-        ax1.legend()
+        ax1.legend(loc='upper left', bbox_to_anchor=(0, 1))
         ax1.grid(True, alpha=0.3)
 
         # Plot 2: Rolling volatility
-        ax6 = plt.subplot(2, 2, 2)
+        ax2 = plt.subplot(2, 2, 2)
         window = 30
         rolling_vol = data['returns'].rolling(window=window).std() * np.sqrt(252)
-        ax6.plot(data.index, rolling_vol, color='black', alpha=0.7, 
+        ax2.plot(data.index, rolling_vol, color='black', alpha=0.7, 
                 label=f'{window}-day Rolling Vol')
         for i in range(self.n_regimes):
             mask = regime_assignment == i
-            ax6.fill_between(data.index, 0, rolling_vol.max(),
+            ax2.fill_between(data.index, 0, rolling_vol.max(),
                             where=mask, alpha=0.3, color=colors[i], label=f'Regime {i}')
-        ax6.set_title('Rolling Volatility vs Regime Detection')
-        ax6.set_ylabel('Annualized Volatility')
-        ax6.set_xlabel('Date')
-        ax6.legend()
-        ax6.grid(True, alpha=0.3)
-        
-        '''
-        # # Plot 2: Regime probabilities
-        # ax2 = plt.subplot(3, 2, 2)
-        # for i in range(self.n_regimes):
-        #     ax2.plot(regime_probs.index, regime_probs[f'Regime_{i}'], 
-        #             label=f'Regime {i}', color=colors[i], alpha=0.8)
-        # ax2.set_title('Regime Probabilities Over Time')
-        # ax2.set_ylabel('Probability')
-        # ax2.set_ylim(0, 1)
-        # ax2.legend()
-        # ax2.grid(True, alpha=0.3)
-        
-        # # Plot 3: True vs Estimated (if available)
-        # if 'true_regime' in data.columns:
-        #     ax3 = plt.subplot(3, 2, 3)
-        #     ax3.plot(data.index, data['true_regime'], 
-        #             label='True Regime', color='green', linewidth=2, alpha=0.8)
-        #     ax3.plot(regime_probs.index, regime_assignment, 
-        #             label='Estimated Regime', color='orange', linestyle='--', alpha=0.8)
-        #     ax3.set_title('True vs Estimated Regime Sequence')
-        #     ax3.set_ylabel('Regime')
-        #     ax3.legend()
-        #     ax3.grid(True, alpha=0.3)
-        '''
+        ax2.set_title('Rolling Volatility vs Regime Detection')
+        ax2.set_ylabel('Annualized Volatility')
+        ax2.set_xlabel('Date')
+        ax2.legend(loc='upper left', bbox_to_anchor=(0, 1))
+        ax2.grid(True, alpha=0.3)
 
         # Plot 3: Return distributions
-        ax4 = plt.subplot(2, 2, 3)
+        ax3 = plt.subplot(2, 2, 3)
         for i in range(self.n_regimes):
             regime_mask = regime_assignment == i
             regime_returns = data['returns'][regime_mask]
             if len(regime_returns) > 0:
-                ax4.hist(regime_returns, bins=50, alpha=0.6, color=colors[i], 
+                ax3.hist(regime_returns, bins=50, alpha=0.6, color=colors[i], 
                         label=f'Regime {i} (n={len(regime_returns)})', density=True)
-        ax4.set_title('Return Distributions by Regime')
-        ax4.set_xlabel('Daily Returns')
-        ax4.set_ylabel('Density')
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
+        ax3.set_title('Return Distributions by Regime')
+        ax3.set_xlabel('Daily Returns')
+        ax3.set_ylabel('Density')
+        ax3.legend(loc='upper left', bbox_to_anchor=(0, 1))
+        ax3.grid(True, alpha=0.3)
         
         # Plot 5: Parameter posteriors
         if self.mcmc_samples is not None:
-            ax5 = plt.subplot(2, 2, 4)
+            ax4 = plt.subplot(2, 2, 4)
             for i in range(self.n_regimes):
-                ax5.hist(self.mcmc_samples['means'][:, i], bins=30, alpha=0.6, 
+                ax4.hist(self.mcmc_samples['means'][:, i], bins=30, alpha=0.6, 
                         label=f'μ_{i}', color=colors[i], density=True)
                 if true_params is not None:
-                    ax5.axvline(true_params['means'][i], color=colors[i], 
+                    ax4.axvline(true_params['means'][i], color=colors[i], 
                               linestyle='--', label=f'True μ_{i}')
-            ax5.set_title('Posterior Distributions of Mean Parameters')
-            ax5.set_xlabel('Mean Parameter Value')
-            ax5.set_ylabel('Density')
-            ax5.legend()
-            ax5.grid(True, alpha=0.3)
+            ax4.set_title('Posterior Distributions of Mean Parameters')
+            ax4.set_xlabel('Mean Parameter Value')
+            ax4.set_ylabel('Density')
+            ax4.legend(loc='upper left', bbox_to_anchor=(0, 1))
+            ax4.grid(True, alpha=0.3)
+        
+        '''
+        # Plot 5: Regime probabilities
+        ax5 = plt.subplot(3, 2, 2)
+        for i in range(self.n_regimes):
+            ax5.plot(regime_probs.index, regime_probs[f'Regime_{i}'], 
+                    label=f'Regime {i}', color=colors[i], alpha=0.8)
+        ax5.set_title('Regime Probabilities Over Time')
+        ax5.set_ylabel('Probability')
+        ax5.set_ylim(0, 1)
+        ax5.legend()
+        ax5.grid(True, alpha=0.3)
+        
+        # Plot 6: True vs Estimated (if available)
+        if 'true_regime' in data.columns:
+            ax6 = plt.subplot(3, 2, 3)
+            ax6.plot(data.index, data['true_regime'], 
+                    label='True Regime', color='green', linewidth=2, alpha=0.8)
+            ax6.plot(regime_probs.index, regime_assignment, 
+                    label='Estimated Regime', color='orange', linestyle='--', alpha=0.8)
+            ax6.set_title('True vs Estimated Regime Sequence')
+            ax6.set_ylabel('Regime')
+            ax6.legend()
+            ax6.grid(True, alpha=0.3)
+        '''
         
         plt.tight_layout()
         plt.show()
