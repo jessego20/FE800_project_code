@@ -456,7 +456,7 @@ class KAMA_MSR:
         
         return signals
     
-    def fit(self, prices: pd.Series, 
+    def fit(self, asset_name: str, prices: pd.Series, 
             optimize_kama: bool = False,
             optimize_filter: bool = False,
             msr_verbose: bool = False,
@@ -484,10 +484,11 @@ class KAMA_MSR:
         # Re-setup randomness for this fit
         self._setup_randomness()
         
-        print("=" * 60)
-        print("KAMA+MSR COMBINED MODEL FITTING")
+        print()
+        print("=" * 120)
+        print(f"KAMA+MSR COMBINED MODEL FITTING for {asset_name}")
         print(f"Mode: {'6-Regime (3-State MSR)' if self.use_three_state_msr else '4-Regime (2-State MSR)'}")
-        print("=" * 60)
+        print("=" * 120)
         
         # Step 1: Fit MSR
         print(f"\n[1/4] Fitting {self.msr.n_regimes}-state MSR model...")
