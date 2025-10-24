@@ -1139,11 +1139,11 @@ class KAMA_MSR:
         self._setup_randomness()
         
         print()
-        print("=" * 120)
+        print("=" * 80)
         print(f"KAMA+MSR COMBINED MODEL FITTING for {asset_name}")
         print(f"Mode: {'6-Regime (3-State MSR)' if self.use_three_state_msr else '4-Regime (2-State MSR)'}")
-        print("=" * 120)
-        
+        print("=" * 80)
+
         # Step 1: Fit MSR
         print(f"\n[1/5] Fitting {self.msr.n_regimes}-state MSR model...")
         msr_defaults = {'n_samples': 500, 'burnin': 100, 'thin': 1, 'verbose': msr_verbose}
@@ -1300,9 +1300,9 @@ class KAMA_MSR:
             5: 'High/Extreme Variance + Bearish'
         }
         
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 80)
         print("REGIME CLASSIFICATION SUMMARY")
-        print("=" * 60)
+        print("=" * 80)
         
         total_periods = len(self.regime_labels)
         
