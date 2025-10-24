@@ -765,6 +765,7 @@ class KAMA_MSR:
         
         return optimized
     
+    '''
     def optimize_msr_priors(self, prices: pd.Series, returns: pd.Series,
                            prior_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
                            param_grid: Optional[Dict[str, list]] = None,
@@ -868,7 +869,8 @@ class KAMA_MSR:
         self.regime_probs = self._calculate_regime_probabilities()
         
         return best_params
-
+    '''
+    
     def analyze_results(self, data: Optional[pd.DataFrame] = None,
                        data_name: str = "Data") -> pd.DataFrame:
         """Comprehensive analysis of KAMA+MSR model results"""
