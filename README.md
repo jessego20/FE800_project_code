@@ -12,7 +12,7 @@ This project is a re-implementation of the "Multi-Period Portfolio Optimisation 
 - **KAMA+MSR**: Combines Kaufman's Adaptive Moving Average with Markov-Switching Regression
 - **Random Forest**: Predicts market regimes (Bullish, Bearish, Other) based on KAMA+MSR labels
 - **Regime Classes**: Four base regimes (LV bullish/bearish, HV bullish/bearish) mapped to three prediction classes
-- **Trading Strategy**: Contrarian interpretation of signals (Bullish prediction = short signal, Bearish = long signal)
+- **Trading Strategy**: LV Bullish = short signal, HV Bearish = long signal)
 
 ### Model Predictive Control (MPC) Framework
 - **Multi-Period Optimization**: Optimizes portfolio weights for horizon H (typically 2 periods)
