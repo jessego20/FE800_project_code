@@ -30,19 +30,13 @@ def enforce_minimum_duration(regime_labels: pd.Series,
     """
     Enforce minimum duration constraint on regime labels while preserving NA values.
     
-    This function ensures that each regime persists for at least `min_duration`
-    periods, reducing noise and spurious regime switches. NA values are kept intact
-    and not processed.
-    
     Parameters:
     -----------
     regime_labels : pd.Series
-        Original regime classification (integer labels: 0, 1, 2, 3)
-        May contain NaN or pd.NA values at the beginning (warmup period)
+        Original regime classification (may contain NaN/NA values at start)
     min_duration : int, default=5
         Minimum number of periods a regime must persist
     method : str, default='extend'
-        Method for enforcement:
         - 'extend': Extend each new regime to last at least min_duration periods
         - 'merge': Merge short regimes with adjacent regimes
         - 'majority': Use majority voting in sliding window
@@ -54,178 +48,241 @@ def enforce_minimum_duration(regime_labels: pd.Series,
     if min_duration <= 1:
         return regime_labels.copy()
     
-    # Create a copy and identify where valid data starts
     filtered_labels = regime_labels.copy()
     
-    # Find first non-NA index
+    # Find valid (non-NA) portion - use index-based approach
     valid_mask = regime_labels.notna()
     if not valid_mask.any():
-        # All NAs - return as is
         return filtered_labels
     
-    first_valid_idx = valid_mask.idxmax()
-    first_valid_pos = regime_labels.index.get_loc(first_valid_idx)
+    # Get numeric positions for valid entries
+    valid_positions = np.where(valid_mask)[0]
+    first_valid_pos = valid_positions[0]
     
-    # Only process valid (non-NA) portion
+    # Work only on valid subset
     valid_labels = regime_labels.iloc[first_valid_pos:].copy()
-    
-    if len(valid_labels) == 0:
-        return filtered_labels
+    valid_indices = valid_labels.index
     
     if method == 'extend':
-        # Extend method: commit to new regime for min_duration periods
-        current_regime = valid_labels.iloc[0]
-        regime_start_idx = 0
+        current_regime = None
+        regime_start_pos = 0
         
-        for i in range(1, len(valid_labels)):
-            # Skip if current value is NA
-            if pd.isna(valid_labels.iloc[i]):
+        for i, (idx, val) in enumerate(valid_labels.items()):
+            if pd.isna(val):
                 continue
+            
+            if current_regime is None:
+                current_regime = val
+                regime_start_pos = i
+                continue
+            
+            if val != current_regime:
+                periods_in_regime = i - regime_start_pos
                 
-            # Check if we're trying to switch regimes
-            if valid_labels.iloc[i] != current_regime:
-                periods_in_regime = i - regime_start_idx
-                
-                # If we haven't been in current regime for min_duration, stay in it
                 if periods_in_regime < min_duration:
                     valid_labels.iloc[i] = current_regime
                 else:
-                    # Switch allowed - start new regime
-                    current_regime = valid_labels.iloc[i]
-                    regime_start_idx = i
-                    
+                    current_regime = val
+                    regime_start_pos = i
+    
     elif method == 'merge':
-        # Merge method: identify short segments and merge with neighbors
+        # Build segments
         segments = []
-        current_regime = valid_labels.iloc[0]
-        start_idx = 0
+        current_regime = None
+        start_pos = 0
         
-        for i in range(1, len(valid_labels)):
-            # Skip NAs
-            if pd.isna(valid_labels.iloc[i]):
+        for i, val in enumerate(valid_labels):
+            if pd.isna(val):
                 continue
                 
-            if valid_labels.iloc[i] != current_regime:
+            if current_regime is None:
+                current_regime = val
+                start_pos = i
+                continue
+                
+            if val != current_regime:
                 segments.append({
                     'regime': current_regime,
-                    'start': start_idx,
+                    'start': start_pos,
                     'end': i - 1,
-                    'length': i - start_idx
+                    'length': i - start_pos
                 })
-                current_regime = valid_labels.iloc[i]
-                start_idx = i
+                current_regime = val
+                start_pos = i
         
-        # Don't forget the last segment
-        segments.append({
-            'regime': current_regime,
-            'start': start_idx,
-            'end': len(valid_labels) - 1,
-            'length': len(valid_labels) - start_idx
-        })
+        if current_regime is not None:
+            segments.append({
+                'regime': current_regime,
+                'start': start_pos,
+                'end': len(valid_labels) - 1,
+                'length': len(valid_labels) - start_pos
+            })
         
-        # Merge short segments with neighbors
-        i = 0
-        while i < len(segments):
-            if segments[i]['length'] < min_duration:
-                # Decide which neighbor to merge with
-                if i == 0:
-                    merge_with = 'next'
-                elif i == len(segments) - 1:
-                    merge_with = 'prev'
+        # Merge short segments
+        for seg in segments:
+            if seg['length'] < min_duration:
+                # Determine merge target
+                if seg is segments[0]:
+                    merge_regime = segments[1]['regime'] if len(segments) > 1 else seg['regime']
+                elif seg is segments[-1]:
+                    merge_regime = segments[-2]['regime']
                 else:
-                    prev_length = segments[i-1]['length']
-                    next_length = segments[i+1]['length']
-                    merge_with = 'prev' if prev_length >= next_length else 'next'
+                    idx = segments.index(seg)
+                    prev_len = segments[idx-1]['length']
+                    next_len = segments[idx+1]['length']
+                    merge_regime = segments[idx-1]['regime'] if prev_len >= next_len else segments[idx+1]['regime']
                 
-                # Perform the merge
-                if merge_with == 'prev' and i > 0:
-                    merge_regime = segments[i-1]['regime']
-                elif merge_with == 'next' and i < len(segments) - 1:
-                    merge_regime = segments[i+1]['regime']
-                else:
-                    merge_regime = segments[i]['regime']
-                
-                # Update labels for this segment, preserving NAs
-                for j in range(segments[i]['start'], segments[i]['end']+1):
-                    if pd.notna(valid_labels.iloc[j]):
-                        valid_labels.iloc[j] = merge_regime
-                
-                segments[i]['regime'] = merge_regime
-            
-            i += 1
-            
+                # Apply merge
+                for pos in range(seg['start'], seg['end'] + 1):
+                    if pd.notna(valid_labels.iloc[pos]):
+                        valid_labels.iloc[pos] = merge_regime
+    
     elif method == 'majority':
-        # Majority method: sliding window with majority vote
-        # Create temporary series without NAs for mode calculation
+        temp_labels = valid_labels.copy()
         for i in range(len(valid_labels)):
             if pd.isna(valid_labels.iloc[i]):
                 continue
-                
-            # Define window
+            
             window_start = max(0, i - min_duration // 2)
             window_end = min(len(valid_labels), i + min_duration // 2 + 1)
+            window = valid_labels.iloc[window_start:window_end].dropna()
             
-            # Get majority regime in window (excluding NAs)
-            window_labels = regime_labels.iloc[first_valid_pos + window_start:first_valid_pos + window_end]
-            window_labels_clean = window_labels.dropna()
-            
-            if len(window_labels_clean) > 0:
-                majority_regime = window_labels_clean.mode()
-                if len(majority_regime) > 0:
-                    valid_labels.iloc[i] = majority_regime.iloc[0]
+            if len(window) > 0:
+                temp_labels.iloc[i] = window.mode().iloc[0]
+        
+        valid_labels = temp_labels
     
-    else:
-        raise ValueError(f"Unknown method: {method}. Choose 'extend', 'merge', or 'majority'")
-    
-    # Put the processed valid labels back into the filtered series
-    # This preserves the original NAs at the beginning
-    filtered_labels.iloc[first_valid_pos:] = valid_labels
+    # Put processed labels back (preserving NAs at beginning)
+    filtered_labels.loc[valid_indices] = valid_labels
     
     return filtered_labels
 
-# def analyze_regime_durations(regime_labels: pd.Series) -> pd.DataFrame:
-#     """
-#     Analyze duration statistics for each regime.
+def analyze_regime_durations(regime_labels: pd.Series) -> pd.DataFrame:
+    """
+    Analyze duration statistics for each regime (NA-safe, index-preserving).
     
-#     Parameters:
-#     -----------
-#     regime_labels : pd.Series
-#         Regime classification labels
+    Parameters:
+    -----------
+    regime_labels : pd.Series
+        Regime labels (may contain NAs)
     
-#     Returns:
-#     --------
-#     pd.DataFrame : Statistics with columns [regime, count, min, max, mean, median, std]
-#     """
-#     segments = []
-#     current_regime = regime_labels.iloc[0]
-#     start_idx = 0
+    Returns:
+    --------
+    pd.DataFrame : Duration statistics by regime
+    """
+    # Work only on valid entries
+    labels_clean = regime_labels.dropna()
     
-#     for i in range(1, len(regime_labels)):
-#         if regime_labels.iloc[i] != current_regime:
-#             segments.append({
-#                 'regime': current_regime,
-#                 'duration': i - start_idx
-#             })
-#             current_regime = regime_labels.iloc[i]
-#             start_idx = i
+    if len(labels_clean) == 0:
+        return pd.DataFrame(columns=['regime', 'count', 'min', 'max', 'mean', 'median', 'std'])
     
-#     segments.append({
-#         'regime': current_regime,
-#         'duration': len(regime_labels) - start_idx
-#     })
+    segments = []
+    current_regime = labels_clean.iloc[0]
+    start_idx = 0
     
-#     segments_df = pd.DataFrame(segments)
+    for i in range(1, len(labels_clean)):
+        if labels_clean.iloc[i] != current_regime:
+            segments.append({
+                'regime': current_regime,
+                'duration': i - start_idx
+            })
+            current_regime = labels_clean.iloc[i]
+            start_idx = i
     
-#     stats = segments_df.groupby('regime')['duration'].agg([
-#         ('count', 'count'),
-#         ('min', 'min'),
-#         ('max', 'max'),
-#         ('mean', 'mean'),
-#         ('median', 'median'),
-#         ('std', 'std')
-#     ]).reset_index()
+    # Last segment
+    segments.append({
+        'regime': current_regime,
+        'duration': len(labels_clean) - start_idx
+    })
     
-#     return stats
+    segments_df = pd.DataFrame(segments)
+    
+    if segments_df.empty:
+        return pd.DataFrame(columns=['regime', 'count', 'min', 'max', 'mean', 'median', 'std'])
+    
+    stats = (
+        segments_df.groupby('regime')['duration']
+        .agg([
+            ('count', 'count'),
+            ('min', 'min'),
+            ('max', 'max'),
+            ('mean', 'mean'),
+            ('median', 'median'),
+            ('std', 'std')
+        ])
+        .reset_index()
+    )
+    
+    return stats
+
+def compute_segment_features(prices: pd.Series, 
+                             returns: pd.Series,
+                             regime_labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute slope and volatility for each regime segment (NA-safe, index-aligned).
+    
+    Parameters:
+    -----------
+    prices : pd.Series
+        Price series
+    returns : pd.Series
+        Return series
+    regime_labels : pd.Series
+        Regime labels (may contain NAs)
+    
+    Returns:
+    --------
+    Tuple[np.ndarray, np.ndarray] : (slopes, volatilities) aligned with regime_labels index
+    """
+    # Initialize with zeros (same length as input)
+    slopes = np.zeros(len(regime_labels))
+    volatilities = np.zeros(len(regime_labels))
+    
+    # Work only on valid regime labels
+    valid_mask = regime_labels.notna()
+    if not valid_mask.any():
+        return slopes, volatilities
+    
+    labels_clean = regime_labels[valid_mask]
+    prices_clean = prices.loc[labels_clean.index]
+    returns_clean = returns.loc[labels_clean.index]
+    
+    # Compute features for each segment
+    current_regime = labels_clean.iloc[0]
+    start_idx = 0
+    
+    for i in range(1, len(labels_clean) + 1):
+        if i == len(labels_clean) or labels_clean.iloc[i] != current_regime:
+            end_idx = i
+            
+            # Get segment data
+            segment_prices = prices_clean.iloc[start_idx:end_idx]
+            segment_returns = returns_clean.iloc[start_idx:end_idx]
+            
+            if len(segment_prices) > 1:
+                # Compute slope
+                log_prices = np.log(segment_prices.values)
+                time_idx = np.arange(len(log_prices))
+                slope = np.polyfit(time_idx, log_prices, 1)[0]
+                
+                # Compute volatility
+                volatility = segment_returns.std()
+            else:
+                slope = 0.0
+                volatility = 0.0
+            
+            # Map back to original index positions
+            segment_indices = labels_clean.index[start_idx:end_idx]
+            for idx in segment_indices:
+                pos = regime_labels.index.get_loc(idx)
+                slopes[pos] = slope
+                volatilities[pos] = volatility
+            
+            if i < len(labels_clean):
+                current_regime = labels_clean.iloc[i]
+                start_idx = i
+    
+    return slopes, volatilities
 
 def calculate_misclassification_score(regime_labels: np.ndarray,
                                       slopes: np.ndarray,
@@ -234,7 +291,7 @@ def calculate_misclassification_score(regime_labels: np.ndarray,
                                       n_clusters: int = 4,
                                       random_seed: int = 42) -> float:
     """
-    Calculate misclassification score using K-Means clustering.
+    Calculate misclassification score using K-Means clustering (NA-safe version).
     
     This is the optimization criterion from the paper (Section 4.2).
     It measures how well the regime labels separate data by slope and volatility.
@@ -242,11 +299,11 @@ def calculate_misclassification_score(regime_labels: np.ndarray,
     Parameters:
     -----------
     regime_labels : np.ndarray
-        Array of regime labels (0, 1, 2, 3)
+        Array of regime labels (0, 1, 2, 3) - may contain NaN values
     slopes : np.ndarray
-        Price slopes (trend) for each time period
+        Price slopes (trend) for each time period - may contain NaN values
     volatilities : np.ndarray
-        Log return volatilities for each time period
+        Log return volatilities for each time period - may contain NaN values
     train_size : float, default=0.75
         Proportion of data to use for K-Means training
     n_clusters : int, default=4
@@ -258,95 +315,81 @@ def calculate_misclassification_score(regime_labels: np.ndarray,
     --------
     float : Misclassification score (0 = perfect, higher = worse)
     """
-    X = np.column_stack([slopes, volatilities])
+    # Convert to pandas for easier NA handling
+    regime_series = pd.Series(regime_labels)
+    slopes_series = pd.Series(slopes)
+    volatilities_series = pd.Series(volatilities)
     
+    # Create feature matrix and identify valid entries
+    features_df = pd.DataFrame({
+        'regime': regime_series,
+        'slope': slopes_series,
+        'volatility': volatilities_series
+    })
+    
+    # Drop rows with any NaN values
+    valid_df = features_df.dropna()
+    
+    if len(valid_df) < 50:  # Need minimum data for meaningful clustering
+        return 1.0
+    
+    # Extract clean arrays
+    regime_labels_clean = valid_df['regime'].values
+    X = valid_df[['slope', 'volatility']].values
+    
+    # Split into train and validation
     split_idx = int(len(X) * train_size)
     X_train = X[:split_idx]
     X_val = X[split_idx:]
-    labels_val = regime_labels[split_idx:]
+    labels_val = regime_labels_clean[split_idx:]
     
-    kmeans = KMeans(
-        n_clusters=n_clusters,
-        n_init=10,
-        max_iter=300,
-        random_state=random_seed
-    )
-    kmeans.fit(X_train)
+    if len(X_train) < 10 or len(X_val) < 10:  # Need minimum samples
+        return 1.0
     
-    cluster_predictions = kmeans.predict(X_val)
-    
-    confusion_matrix = np.zeros((n_clusters, n_clusters), dtype=int)
-    
-    for cluster_id in range(n_clusters):
-        cluster_mask = (cluster_predictions == cluster_id)
-        cluster_labels = labels_val[cluster_mask]
+    try:
+        # Fit K-Means on training data
+        kmeans = KMeans(
+            n_clusters=min(n_clusters, len(np.unique(regime_labels_clean))),  # Don't exceed unique labels
+            n_init=10,
+            max_iter=300,
+            random_state=random_seed
+        )
+        kmeans.fit(X_train)
         
-        for regime_id in range(n_clusters):
-            confusion_matrix[cluster_id, regime_id] = np.sum(cluster_labels == regime_id)
-    
-    misclassifications = 0
-    
-    for cluster_id in range(n_clusters):
-        row_total = confusion_matrix[cluster_id, :].sum()
-        if row_total > 0:
-            dominant_count = confusion_matrix[cluster_id, :].max()
-            misclassifications += (row_total - dominant_count)
-    
-    total_samples = len(labels_val)
-    misclassification_score = misclassifications / total_samples if total_samples > 0 else 1.0
-    
-    return misclassification_score
-
-def compute_segment_features(prices: pd.Series, 
-                             returns: pd.Series,
-                             regime_labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute slope (trend) and volatility for each regime segment.
-    
-    Parameters:
-    -----------
-    prices : pd.Series
-        Price series
-    returns : pd.Series
-        Return series (log returns)
-    regime_labels : pd.Series
-        Regime labels
-    
-    Returns:
-    --------
-    Tuple[np.ndarray, np.ndarray] : (slopes, volatilities) arrays
-    """
-    slopes = np.zeros(len(regime_labels))
-    volatilities = np.zeros(len(regime_labels))
-    
-    current_regime = regime_labels.iloc[0]
-    start_idx = 0
-    
-    for i in range(1, len(regime_labels) + 1):
-        if i == len(regime_labels) or regime_labels.iloc[i] != current_regime:
-            end_idx = i
+        # Predict clusters for validation data
+        cluster_predictions = kmeans.predict(X_val)
+        
+        # Build confusion matrix
+        unique_clusters = np.unique(cluster_predictions)
+        unique_regimes = np.unique(labels_val)
+        
+        confusion_matrix = np.zeros((len(unique_clusters), len(unique_regimes)), dtype=int)
+        
+        for i, cluster_id in enumerate(unique_clusters):
+            cluster_mask = (cluster_predictions == cluster_id)
+            cluster_labels = labels_val[cluster_mask]
             
-            segment_prices = prices.iloc[start_idx:end_idx]
-            segment_returns = returns.iloc[start_idx:end_idx]
-            
-            if len(segment_prices) > 1:
-                log_prices = np.log(segment_prices)
-                time_idx = np.arange(len(log_prices))
-                slope = np.polyfit(time_idx, log_prices, 1)[0]
-                volatility = segment_returns.std()
-            else:
-                slope = 0.0
-                volatility = 0.0
-            
-            slopes[start_idx:end_idx] = slope
-            volatilities[start_idx:end_idx] = volatility
-            
-            if i < len(regime_labels):
-                current_regime = regime_labels.iloc[i]
-                start_idx = i
-    
-    return slopes, volatilities
-
+            for j, regime_id in enumerate(unique_regimes):
+                confusion_matrix[i, j] = np.sum(cluster_labels == regime_id)
+        
+        # Calculate misclassification score
+        misclassifications = 0
+        
+        for i in range(len(unique_clusters)):
+            row_total = confusion_matrix[i, :].sum()
+            if row_total > 0:
+                dominant_count = confusion_matrix[i, :].max()
+                misclassifications += (row_total - dominant_count)
+        
+        # Normalize by total validation samples
+        total_samples = len(labels_val)
+        misclassification_score = misclassifications / total_samples if total_samples > 0 else 1.0
+        
+        return misclassification_score
+        
+    except Exception as e:
+        # Return worst score if clustering fails
+        return 1.0
 
 # ============================================================================
 # KAMA CLASS (WITH IMPROVED OPTIMIZATION)
@@ -609,16 +652,16 @@ class KAMA:
                               f"params={params}, score={score:.4f} **BEST**")
         
         if verbose:
-            print(f"\n{'='*70}")
+            print(f"\n{'='*80}")
             print("OPTIMIZATION COMPLETE!")
-            print(f"{'='*70}")
+            print(f"{'='*80}")
             print(f"Best parameters:")
             print(f"  n         = {best_params[0]}")
             print(f"  n_fast    = {best_params[1]}")
             print(f"  n_slow    = {best_params[2]}")
             print(f"  gamma     = {best_params[3]:.2f}")
             print(f"Best misclassification score: {best_score:.4f}")
-            print(f"{'='*70}\n")
+            print(f"{'='*80}\n")
         
         # Update instance parameters
         self.n = best_params[0]
@@ -631,7 +674,7 @@ class KAMA:
 
 
 # ============================================================================
-# MARKOV SWITCHING MODEL CLASS
+# MARKOV SWITCHING MODEL CLASS (UNCHANGED)
 # ============================================================================
 
 class MarkovSwitchingModel:
@@ -872,7 +915,7 @@ class MarkovSwitchingModel:
 
 
 # ============================================================================
-# KAMA+MSR COMBINED MODEL CLASS
+# KAMA+MSR COMBINED MODEL CLASS (WITH IMPROVEMENTS INTEGRATED)
 # ============================================================================
 
 class KAMA_MSR:
@@ -985,50 +1028,19 @@ class KAMA_MSR:
             self.regime_probs = self._calculate_regime_probabilities()
     
     # NEW METHOD: Analyze regime durations
-    def analyze_regime_durations(regime_labels: pd.Series) -> pd.DataFrame:
+    def analyze_regime_durations(self) -> pd.DataFrame:
         """
         Analyze duration statistics for each regime.
         
-        Parameters:
-        -----------
-        regime_labels : pd.Series
-            Regime classification labels
-        
         Returns:
         --------
-        pd.DataFrame : Statistics with columns [regime, count, min, max, mean, median, std]
+        pd.DataFrame : Statistics with min, max, mean, median durations per regime
         """
-        segments = []
-        current_regime = regime_labels.iloc[0]
-        start_idx = 0
+        if not hasattr(self, 'regime_labels') or self.regime_labels is None:
+            raise ValueError("Model must be fitted before analyzing durations")
         
-        for i in range(1, len(regime_labels)):
-            if regime_labels.iloc[i] != current_regime:
-                segments.append({
-                    'regime': current_regime,
-                    'duration': i - start_idx
-                })
-                current_regime = regime_labels.iloc[i]
-                start_idx = i
-        
-        segments.append({
-            'regime': current_regime,
-            'duration': len(regime_labels) - start_idx
-        })
-        
-        segments_df = pd.DataFrame(segments)
-        
-        stats = segments_df.groupby('regime')['duration'].agg([
-            ('count', 'count'),
-            ('min', 'min'),
-            ('max', 'max'),
-            ('mean', 'mean'),
-            ('median', 'median'),
-            ('std', 'std')
-        ]).reset_index()
-        
-        return stats
-
+        return analyze_regime_durations(self.regime_labels)
+    
     # NEW METHOD: Plot regime duration distribution
     def plot_regime_duration_distribution(self, figsize=(12, 6)):
         """Visualize distribution of regime durations."""
@@ -1081,10 +1093,9 @@ class KAMA_MSR:
         return signals
     
     def fit(self, asset_name: str, prices: pd.Series, 
-            optimize_kama: bool = False,
+            optimize_kama: bool = True,
             kama_optimization_method: str = 'random',
             n_random_trials: int = 50,
-            optimize_filter: bool = False,
             min_regime_duration: Optional[int] = None,
             duration_enforcement_method: str = 'extend',
             msr_verbose: bool = False,
@@ -1200,25 +1211,6 @@ class KAMA_MSR:
         
         print("\nModel fitting complete!")
         self._print_regime_summary()
-        
-        # Step 6: Optimize filter if requested
-        if optimize_filter:
-            print("\n[Optional] Optimizing filter parameters...")
-            self.optimize_filter_params(self.prices, self.returns)
-            self.filter_values = self.calculate_kama_filter(self.kama_values)
-            kama_signals = self.detect_kama_signals(self.kama_values, self.filter_values)
-            self.regime_labels = self._classify_combined_regimes(self.msr_regime_probs, kama_signals)
-            
-            if self.min_regime_duration is not None:
-                self.regime_labels = enforce_minimum_duration(
-                    self.regime_labels,
-                    self.min_regime_duration,
-                    self.duration_method
-                )
-            
-            self.regime_probs = self._calculate_regime_probabilities()
-            print("\nRe-classification with optimized filter complete!")
-            self._print_regime_summary()
         
         return self
     
@@ -1405,159 +1397,6 @@ class KAMA_MSR:
         
         plt.tight_layout()
         plt.show()
-    
-    def optimize_filter_params(self, prices: pd.Series, returns: pd.Series,
-                              param_bounds: Optional[Dict] = None) -> Dict:
-        """Optimize filter parameters (n_lookback, gamma)"""
-        if param_bounds is None:
-            param_bounds = {'n_lookback': (10, 50), 'gamma': (0.5, 2.0)}
-        
-        def objective(params):
-            n_lookback, gamma = int(params[0]), params[1]
-            self.n_lookback = n_lookback
-            self.gamma = gamma
-            
-            filter_vals = self.calculate_kama_filter(self.kama_values)
-            kama_sigs = self.detect_kama_signals(self.kama_values, filter_vals)
-            regime_labels = self._classify_combined_regimes(self.msr_regime_probs, kama_sigs)
-            
-            regime_returns = {}
-            for regime in range(self.n_combined_regimes):
-                mask = (regime_labels == regime)
-                if mask.sum() > 0:
-                    regime_returns[regime] = returns.loc[regime_labels.index[mask]]
-            
-            regime_means = [r.mean() for r in regime_returns.values() if len(r) > 0]
-            if len(regime_means) < 2:
-                return 1e10
-            
-            between_var = np.var(regime_means)
-            within_var = np.mean([r.var() for r in regime_returns.values() if len(r) > 0])
-            
-            if within_var == 0:
-                return 1e10
-            
-            return -(between_var / within_var)
-        
-        print("\nOptimizing filter parameters...")
-        result = minimize(
-            objective,
-            x0=[self.n_lookback, self.gamma],
-            bounds=[param_bounds['n_lookback'], param_bounds['gamma']],
-            method='L-BFGS-B'
-        )
-        
-        optimized = {'n_lookback': int(result.x[0]), 'gamma': result.x[1]}
-        print(f"Optimized: n_lookback={optimized['n_lookback']}, gamma={optimized['gamma']:.3f}")
-        
-        self.n_lookback = optimized['n_lookback']
-        self.gamma = optimized['gamma']
-        
-        return optimized
-    
-    def optimize_msr_priors(self, prices: pd.Series, returns: pd.Series,
-                           prior_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
-                           param_grid: Optional[Dict[str, list]] = None,
-                           method: str = 'grid') -> Dict:
-        """
-        Optimize MarkovSwitchingModel priors to improve regime separation
-        """
-        
-        def evaluate_priors(prior_set: Dict) -> float:
-            # Create fresh MSR with new priors
-            msr_params = {'n_regimes': self.msr.n_regimes}
-            fresh_msr = MarkovSwitchingModel(**msr_params)
-            
-            if hasattr(fresh_msr, 'set_priors'):
-                fresh_msr.set_priors(**prior_set)
-            else:
-                raise AttributeError("MSR must have set_priors() method")
-            
-            # Setup randomness for this evaluation
-            if self.random_seed is not None:
-                seed_offset = abs(hash(str(prior_set))) % 1000
-                np.random.seed(self.random_seed + seed_offset)
-                random.seed(self.random_seed + seed_offset)
-            
-            # Fit fresh model
-            fresh_msr.fit(returns, n_samples=500, burnin=100, verbose=False)
-            msr_probs = fresh_msr.get_regime_probabilities()
-            
-            if self.kama_values is None:
-                self.kama_values, _, _ = self.kama.calculate_kama(prices)
-            
-            filter_vals = self.calculate_kama_filter(self.kama_values)
-            kama_signals = self.detect_kama_signals(self.kama_values, filter_vals)
-            new_regime_labels = self._classify_combined_regimes(msr_probs, kama_signals)
-            
-            regime_returns = {}
-            for regime in range(self.n_combined_regimes):
-                mask = (new_regime_labels == regime)
-                if mask.sum() > 0:
-                    regime_returns[regime] = returns.loc[new_regime_labels.index[mask]]
-            
-            if len(regime_returns) < 2:
-                return -np.inf
-            
-            between_var = np.var([r.mean() for r in regime_returns.values()])
-            within_var = np.mean([r.var() for r in regime_returns.values()])
-            
-            if within_var == 0:
-                return -np.inf
-            
-            return between_var / within_var
-        
-        best_score = -np.inf
-        best_params = None
-        
-        if method == 'grid':
-            if param_grid:
-                keys = param_grid.keys()
-                for vals in product(*param_grid.values()):
-                    candidate = dict(zip(keys, vals))
-                    score = evaluate_priors(candidate)
-                    if score > best_score:
-                        best_score = score
-                        best_params = candidate
-            elif prior_bounds:
-                keys = list(prior_bounds.keys())
-                ranges = [np.linspace(b[0], b[1], 3) for b in prior_bounds.values()]
-                for vals in product(*ranges):
-                    candidate = dict(zip(keys, vals))
-                    score = evaluate_priors(candidate)
-                    if score > best_score:
-                        best_score = score
-                        best_params = candidate
-        
-        elif method == 'random':
-            n_samples = 50
-            for _ in range(n_samples):
-                candidate = {k: random.uniform(low, high) 
-                           for k, (low, high) in prior_bounds.items()}
-                score = evaluate_priors(candidate)
-                if score > best_score:
-                    best_score = score
-                    best_params = candidate
-        
-        print(f"\nOptimized priors: {best_params}, Score: {best_score:.4f}")
-        
-        # Apply best priors
-        final_msr = MarkovSwitchingModel(n_regimes=self.msr.n_regimes)
-        final_msr.set_priors(**best_params)
-        
-        # Re-setup randomness for final fit
-        self._setup_randomness()
-        
-        final_msr.fit(returns, n_samples=500, burnin=100, verbose=False)
-        self.msr = final_msr
-        self.msr_regime_probs = self.msr.get_regime_probabilities()
-        
-        # Reclassify regimes
-        kama_signals = self.detect_kama_signals(self.kama_values, self.filter_values)
-        self.regime_labels = self._classify_combined_regimes(self.msr_regime_probs, kama_signals)
-        self.regime_probs = self._calculate_regime_probabilities()
-        
-        return best_params
 
     def analyze_results(self, data: Optional[pd.DataFrame] = None,
                        data_name: str = "Data") -> pd.DataFrame:
@@ -1565,9 +1404,9 @@ class KAMA_MSR:
         if data is None:
             data = pd.DataFrame({'returns': self.returns, 'prices': self.prices})
         
-        print(f"\n{'='*60}")
+        print(f"\n{'='*80}")
         print(f"KAMA+MSR ANALYSIS RESULTS FOR {data_name.upper()}")
-        print(f"{'='*60}")
+        print(f"{'='*80}")
         
         regime_probs = self.get_regime_probabilities()
         
@@ -1619,9 +1458,9 @@ class KAMA_MSR:
         if regime_probs is None:
             regime_probs = self.get_regime_probabilities()
         
-        print(f"\n{'='*60}")
+        print(f"\n{'='*80}")
         print(f"DETAILED REGIME ANALYSIS - {data_name.upper()}")
-        print(f"{'='*60}")
+        print(f"{'='*80}")
         
         regime_classification = self.regime_labels.dropna()
         
@@ -1701,9 +1540,9 @@ class KAMA_MSR:
         if regime_probs is None:
             regime_probs = self.get_regime_probabilities()
         
-        print(f"\n{'='*50}")
+        print(f"\n{'='*80}")
         print(f"KAMA+MSR MODEL DIAGNOSTICS - {data_name.upper()}")
-        print(f"{'='*50}")
+        print(f"{'='*80}")
         
         returns = data['returns'].dropna().values
         regime_assignment = self.regime_labels.dropna().values
