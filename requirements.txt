@@ -18,3 +18,4 @@ nbformat
 matplotlib
 seaborn
 numba
+scikit-learn
