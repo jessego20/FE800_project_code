@@ -1075,21 +1075,25 @@ class KAMA_MSR:
         filter_values = self.gamma * kama_std
         return filter_values
     
-    def detect_kama_signals(self, kama_series: pd.Series, 
+    def detect_kama_signals(self, kama_series: pd.Series,
                            filter_series: pd.Series) -> pd.Series:
         """Detect bullish/bearish signals based on KAMA and filter"""
         signals = pd.Series(0, index=kama_series.index)
-        
-        kama_low = kama_series.rolling(window=self.n_lookback).min()
-        kama_high = kama_series.rolling(window=self.n_lookback).max()
-        
+
+        # Use only historical data (exclude current bar) by shifting
+        kama_low = kama_series.rolling(window=self.n_lookback).min().shift(1)
+        kama_high = kama_series.rolling(window=self.n_lookback).max().shift(1)
+
         bullish_condition = (kama_series - kama_low) > filter_series
         bearish_condition = (kama_high - kama_series) > filter_series
-        
+
         signals[bullish_condition] = 1
         signals[bearish_condition] = -1
+
+        # Apply 1-day lag so signal at close of day X triggers regime change on X+1
+        signals = signals.shift(1)
         signals = signals.replace(0, np.nan).ffill().fillna(0)
-        
+
         return signals
     
     def fit(self, asset_name: str, prices: pd.Series, 
