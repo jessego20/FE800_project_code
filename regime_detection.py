@@ -1005,7 +1005,6 @@ class KAMA_MSR:
         self.prices = None
         self.returns = None
     
-    # NEW METHOD: Set minimum duration
     def set_minimum_duration(self, min_duration: int, method: str = 'extend'):
         """
         Set minimum regime duration constraint and apply to existing labels.
@@ -1027,7 +1026,6 @@ class KAMA_MSR:
             )
             self.regime_probs = self._calculate_regime_probabilities()
     
-    # NEW METHOD: Analyze regime durations
     def analyze_regime_durations(self) -> pd.DataFrame:
         """
         Analyze duration statistics for each regime.
@@ -1040,34 +1038,7 @@ class KAMA_MSR:
             raise ValueError("Model must be fitted before analyzing durations")
         
         return analyze_regime_durations(self.regime_labels)
-    
-    # NEW METHOD: Plot regime duration distribution
-    def plot_regime_duration_distribution(self, figsize=(12, 6)):
-        """Visualize distribution of regime durations."""
-        stats = self.analyze_regime_durations()
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
-        
-        # Bar plot of mean durations
-        ax1.bar(stats['regime'], stats['mean'], alpha=0.7)
-        ax1.set_xlabel('Regime')
-        ax1.set_ylabel('Mean Duration (periods)')
-        ax1.set_title('Mean Duration by Regime')
-        ax1.grid(axis='y', alpha=0.3)
-        
-        # Duration statistics with error bars
-        ax2.bar(stats['regime'], stats['median'], alpha=0.7, label='Median')
-        ax2.errorbar(stats['regime'], stats['median'], 
-                    yerr=stats['std'], fmt='o', color='red', label='Std Dev')
-        ax2.set_xlabel('Regime')
-        ax2.set_ylabel('Duration (periods)')
-        ax2.set_title('Duration Distribution by Regime')
-        ax2.legend()
-        ax2.grid(axis='y', alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-    
+
     def calculate_kama_filter(self, kama_series: pd.Series) -> pd.Series:
         """Calculate KAMA filter: f_t = γ * σ(KAMA_t)"""
         kama_changes = kama_series.diff()
@@ -1090,9 +1061,12 @@ class KAMA_MSR:
         signals[bullish_condition] = 1
         signals[bearish_condition] = -1
 
-        # Apply 1-day lag so signal at close of day X triggers regime change on X+1
-        signals = signals.shift(1)
+        # Forward fill to maintain regime until signal change
         signals = signals.replace(0, np.nan).ffill().fillna(0)
+
+        # Apply 1-day lag so signal at close of day X triggers regime change on X+1
+        # This shift preserves the previous regime on day X
+        signals = signals.shift(1).ffill().fillna(0)
 
         return signals
     
@@ -1319,14 +1293,14 @@ class KAMA_MSR:
         print(f"\nTotal regime changes: {changes}")
         print(f"Average regime duration: {total_periods / (changes + 1):.1f} periods")
     
-    def plot_regimes(self, figsize=(16, 12)):
+    def plot_regimes(self, figsize=(16, 8), data_name: str = "Asset"):
         """Plot prices, KAMA, filter, and regime classification"""
         if self.regime_labels is None:
             raise ValueError("Model not fitted. Call fit() first.")
         
         regime_labels_clean = self.regime_labels.dropna()
         
-        fig, axes = plt.subplots(4, 1, figsize=figsize)
+        fig, axes = plt.subplots(2, 1, figsize=figsize, gridspec_kw={'height_ratios': [2, 1]})
         
         if self.use_three_state_msr:
             colors = {0: 'green', 1: 'blue', 2: 'yellow',
@@ -1353,57 +1327,57 @@ class KAMA_MSR:
                 ax1.fill_between(self.prices.index, self.prices.min(), self.prices.max(),
                                where=mask_aligned.values, alpha=0.2, color=colors[regime],
                                label=regime_names[regime])
-        
-        ax1.set_title('Price and KAMA with Regime Classification')
+
+        ax1.set_title(f'{data_name}: Price and KAMA with Regime Classification')
         ax1.set_ylabel('Price')
         ax1.legend(loc='best', ncol=2)
         ax1.grid(True, alpha=0.3)
         
-        # Plot 2: KAMA Filter
-        ax2 = axes[1]
-        ax2.plot(self.filter_values.index, self.filter_values, 
-                label='KAMA Filter', color='purple', linewidth=1.5)
-        ax2.set_title('KAMA Filter (γ × σ(KAMA))')
-        ax2.set_ylabel('Filter Value')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # Plot 3: MSR Probabilities
-        ax3 = axes[2]
-        msr_colors = ['blue', 'orange', 'red'] if self.use_three_state_msr else ['blue', 'red']
-        msr_labels = ['Low', 'Medium', 'High'] if self.use_three_state_msr else ['Low', 'High']
-        
-        for i in range(self.msr.n_regimes):
-            ax3.plot(self.msr_regime_probs.index, self.msr_regime_probs[f'Regime_{i}'],
-                    label=msr_labels[i], color=msr_colors[i], linewidth=1.5)
-        
-        ax3.axhline(y=0.5, color='gray', linestyle='--', alpha=0.5)
-        ax3.set_title('MSR Variance Regime Probabilities')
-        ax3.set_ylabel('Probability')
-        ax3.set_ylim(0, 1)
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-        
-        # Plot 4: Regime Classification
-        ax4 = axes[3]
+        # Plot 2: Regime Classification
+        ax4 = axes[1]
         for regime in range(self.n_combined_regimes):
             mask = (regime_labels_clean == regime)
             if mask.any():
                 ax4.scatter(regime_labels_clean.index[mask], regime_labels_clean[mask],
                            c=colors[regime], label=regime_names[regime], alpha=0.6, s=10)
         
-        ax4.set_title(f'{"Six" if self.use_three_state_msr else "Four"}-Regime Classification')
+        ax4.set_title(f'{data_name}: {"Six" if self.use_three_state_msr else "Four"}-Regime Classification')
         ax4.set_ylabel('Regime')
         ax4.set_yticks(list(range(self.n_combined_regimes)))
         ax4.set_yticklabels([regime_names[i] for i in range(self.n_combined_regimes)])
         ax4.legend(loc='best', ncol=2)
         ax4.grid(True, alpha=0.3)
+
+        # # Plot 3: KAMA Filter
+        # ax2 = axes[2]
+        # ax2.plot(self.filter_values.index, self.filter_values, 
+        #         label='KAMA Filter', color='purple', linewidth=1.5)
+        # ax2.set_title('KAMA Filter (γ × σ(KAMA))')
+        # ax2.set_ylabel('Filter Value')
+        # ax2.legend()
+        # ax2.grid(True, alpha=0.3)
+        
+        # # Plot 4: MSR Probabilities
+        # ax3 = axes[3]
+        # msr_colors = ['blue', 'orange', 'red'] if self.use_three_state_msr else ['blue', 'red']
+        # msr_labels = ['Low', 'Medium', 'High'] if self.use_three_state_msr else ['Low', 'High']
+        
+        # for i in range(self.msr.n_regimes):
+        #     ax3.plot(self.msr_regime_probs.index, self.msr_regime_probs[f'Regime_{i}'],
+        #             label=msr_labels[i], color=msr_colors[i], linewidth=1.5)
+        
+        # ax3.axhline(y=0.5, color='gray', linestyle='--', alpha=0.5)
+        # ax3.set_title('MSR Variance Regime Probabilities')
+        # ax3.set_ylabel('Probability')
+        # ax3.set_ylim(0, 1)
+        # ax3.legend()
+        # ax3.grid(True, alpha=0.3)
         
         plt.tight_layout()
         plt.show()
 
     def analyze_results(self, data: Optional[pd.DataFrame] = None,
-                       data_name: str = "Data") -> pd.DataFrame:
+                       data_name: str = "Asset") -> pd.DataFrame:
         """Comprehensive analysis of KAMA+MSR model results"""
         if data is None:
             data = pd.DataFrame({'returns': self.returns, 'prices': self.prices})
@@ -1454,7 +1428,7 @@ class KAMA_MSR:
 
     def regime_characteristics(self, data: Optional[pd.DataFrame] = None,
                               regime_probs: Optional[pd.DataFrame] = None,
-                              data_name: str = "Data") -> pd.Series:
+                              data_name: str = "Asset") -> pd.Series:
         """Detailed regime characteristics analysis"""
         if data is None:
             data = pd.DataFrame({'returns': self.returns, 'prices': self.prices})
@@ -1535,7 +1509,7 @@ class KAMA_MSR:
 
     def diagnostics(self, data: Optional[pd.DataFrame] = None,
                    regime_probs: Optional[pd.DataFrame] = None,
-                   data_name: str = "Data",
+                   data_name: str = "Asset",
                    trace_plots: bool = False):
         """Perform model diagnostics and validation"""
         if data is None:
@@ -1615,7 +1589,8 @@ class KAMA_MSR:
 
     def plot_comprehensive_analysis(self, data: Optional[pd.DataFrame] = None,
                                     regime_probs: Optional[pd.DataFrame] = None,
-                                    data_name: str = "Data"):
+                                    data_name: str = "Asset",
+                                    figsize=(16, 12)):
         """Create comprehensive visualization"""
         if data is None:
             data = pd.DataFrame({'returns': self.returns, 'prices': self.prices})
@@ -1623,7 +1598,7 @@ class KAMA_MSR:
         if regime_probs is None:
             regime_probs = self.get_regime_probabilities()
         
-        fig = plt.figure(figsize=(16, 10))
+        fig = plt.figure(figsize=figsize)
         
         if self.use_three_state_msr:
             colors_map = {0: 'green', 1: 'blue', 2: 'yellow',
