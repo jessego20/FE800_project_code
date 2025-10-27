@@ -399,6 +399,10 @@ class KAMA:
     """
     Kaufman's Adaptive Moving Average implementation.
     This class handles the calculation and optimization of KAMA parameters.
+    
+    NOTE: Per the paper, parameter 'n' controls BOTH:
+      - The efficiency ratio (ER) calculation window
+      - The filter's rolling standard deviation window (σ(KAMA))
     """
     def __init__(self, n: int = 10, n_fast: int = 2, n_slow: int = 30):
         """
@@ -408,6 +412,7 @@ class KAMA:
         -----------
         n : int
             Length of the efficiency ratio calculation period
+            Also used for the filter rolling window (per paper)
         n_fast : int
             Short-term smoothing constant period (fast)
         n_slow : int
@@ -450,13 +455,13 @@ class KAMA:
                           param_grid: Optional[Dict[str, List]] = None,
                           method: str = 'random',
                           n_random_trials: int = 50,
-                          n_lookback: int = 20,
                           gamma: float = 1.0,
                           verbose: bool = True) -> Tuple[int, int, int, float]:
         """
         Optimize KAMA and Filter parameters using misclassification score.
         
         This implements the optimization procedure from Section 4.2 of the paper.
+        Note: Per the paper, 'n' is used for both ER and filter windows.
         
         Parameters:
         -----------
@@ -471,11 +476,8 @@ class KAMA:
         method : str, default='random'
             'random': random search with n_random_trials (RECOMMENDED)
             'coarse_to_fine': two-stage grid search
-            'grid': exhaustive grid search
         n_random_trials : int, default=50
             Number of random trials
-        n_lookback : int, default=20
-            Lookback period for filter calculation
         gamma : float, default=1.0
             Current gamma value
         verbose : bool, default=True
@@ -490,7 +492,7 @@ class KAMA:
                 'n': [5, 7, 10, 12, 15, 20, 25, 30],
                 'n_fast': [2, 3, 5, 7, 10],
                 'n_slow': [20, 25, 30, 40, 50, 60],
-                'gamma': [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+                'gamma': [0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
             }
         
         def objective(params):
@@ -513,13 +515,13 @@ class KAMA:
                 for i in range(n + 1, len(prices)):
                     kama.iloc[i] = kama.iloc[i-1] + sc.iloc[i] * (prices.iloc[i] - kama.iloc[i-1])
                 
-                # Calculate filter
+                # Calculate filter - USE SAME WINDOW 'n' per paper
                 kama_changes = kama.diff()
-                filter_values = gamma_val * kama_changes.rolling(n_lookback).std()
+                filter_values = gamma_val * kama_changes.rolling(int(n)).std()
                 
-                # Generate KAMA signals
-                kama_low = kama.rolling(window=n_lookback).min()
-                kama_high = kama.rolling(window=n_lookback).max()
+                # Generate KAMA signals - USE SAME WINDOW 'n' per paper
+                kama_low = kama.rolling(window=int(n)).min()
+                kama_high = kama.rolling(window=int(n)).max()
                 
                 signals = pd.Series(0, index=kama.index)
                 bullish_condition = (kama - kama_low) > filter_values
@@ -656,7 +658,7 @@ class KAMA:
             print("OPTIMIZATION COMPLETE!")
             print(f"{'='*80}")
             print(f"Best parameters:")
-            print(f"  n         = {best_params[0]}")
+            print(f"  n         = {best_params[0]} (used for ER AND filter window)")
             print(f"  n_fast    = {best_params[1]}")
             print(f"  n_slow    = {best_params[2]}")
             print(f"  gamma     = {best_params[3]:.2f}")
@@ -672,9 +674,8 @@ class KAMA:
         
         return best_params
 
-
 # ============================================================================
-# MARKOV SWITCHING MODEL CLASS (UNCHANGED)
+# MARKOV SWITCHING MODEL CLASS
 # ============================================================================
 
 class MarkovSwitchingModel:
@@ -913,9 +914,8 @@ class MarkovSwitchingModel:
         
         return pd.DataFrame(regime_probs, index=returns.dropna().index)
 
-
 # ============================================================================
-# KAMA+MSR COMBINED MODEL CLASS (WITH IMPROVEMENTS INTEGRATED)
+# KAMA+MSR COMBINED MODEL CLASS
 # ============================================================================
 
 class KAMA_MSR:
@@ -925,10 +925,10 @@ class KAMA_MSR:
     Based on: Pomorski & Gorse (2022) "Improving on the Markov-Switching 
     Regression Model by the Use of an Adaptive Moving Average"
     
-    IMPROVEMENTS INCLUDED:
-    - Minimum regime duration enforcement
-    - Fixed KAMA parameter optimization using misclassification score
-    - Duration analysis tools
+    IMPORTANT: Per the paper, parameter 'n' is used for BOTH:
+      - Efficiency ratio calculation
+      - Filter rolling window (σ(KAMA))
+    This implementation strictly follows the paper.
     """
     
     def __init__(self, 
@@ -947,7 +947,7 @@ class KAMA_MSR:
         msr_params : dict, optional
             MSR parameters: {'n_regimes': 2}
         filter_params : dict, optional
-            Filter parameters: {'n_lookback': 20, 'gamma': 1.0}
+            Filter parameters: {'gamma': 1.0}
         use_three_state_msr : bool, default=False
             Whether to use 3-state MSR
         random_seed : int, optional
@@ -972,10 +972,8 @@ class KAMA_MSR:
         
         self.msr = MarkovSwitchingModel(**msr_params)
         
-        # Filter parameters
-        filter_defaults = {'n_lookback': 20, 'gamma': 1.0}
+        filter_defaults = {'gamma': 1.0}
         self.filter_params = filter_params or filter_defaults
-        self.n_lookback = self.filter_params['n_lookback']
         self.gamma = self.filter_params['gamma']
         
         self.n_combined_regimes = 6 if use_three_state_msr else 4
@@ -1040,20 +1038,26 @@ class KAMA_MSR:
         return analyze_regime_durations(self.regime_labels)
 
     def calculate_kama_filter(self, kama_series: pd.Series) -> pd.Series:
-        """Calculate KAMA filter: f_t = γ * σ(KAMA_t)"""
+        """
+        Calculate KAMA filter: f_t = γ * σ(KAMA_t)
+        Uses self.kama.n as rolling window (same as ER calculation per paper)
+        """
         kama_changes = kama_series.diff()
-        kama_std = kama_changes.rolling(window=self.n_lookback).std()
+        kama_std = kama_changes.rolling(window=self.kama.n).std()
         filter_values = self.gamma * kama_std
         return filter_values
     
     def detect_kama_signals(self, kama_series: pd.Series,
                            filter_series: pd.Series) -> pd.Series:
-        """Detect bullish/bearish signals based on KAMA and filter"""
+        """
+        Detect bullish/bearish signals based on KAMA and filter
+        Uses self.kama.n as rolling window (same as ER calculation per paper)
+        """
         signals = pd.Series(0, index=kama_series.index)
 
         # Use only historical data (exclude current bar) by shifting
-        kama_low = kama_series.rolling(window=self.n_lookback).min().shift(1)
-        kama_high = kama_series.rolling(window=self.n_lookback).max().shift(1)
+        kama_low = kama_series.rolling(window=self.kama.n).min().shift(1)
+        kama_high = kama_series.rolling(window=self.kama.n).max().shift(1)
 
         bullish_condition = (kama_series - kama_low) > filter_series
         bearish_condition = (kama_high - kama_series) > filter_series
@@ -1093,8 +1097,6 @@ class KAMA_MSR:
             Method: 'random' (fast) or 'coarse_to_fine' (thorough)
         n_random_trials : int, default=50
             Number of random trials if using random search
-        optimize_filter : bool, default=False
-            Whether to optimize filter parameters
         min_regime_duration : int, optional
             If set, enforce minimum duration on regimes
         duration_enforcement_method : str, default='extend'
@@ -1121,7 +1123,7 @@ class KAMA_MSR:
         print(f"KAMA+MSR COMBINED MODEL FITTING for {asset_name}")
         print(f"Mode: {'6-Regime (3-State MSR)' if self.use_three_state_msr else '4-Regime (2-State MSR)'}")
         print("=" * 80)
-
+        
         # Step 1: Fit MSR
         print(f"\n[1/5] Fitting {self.msr.n_regimes}-state MSR model...")
         msr_defaults = {'n_samples': 500, 'burnin': 100, 'thin': 1, 'verbose': msr_verbose}
@@ -1138,7 +1140,6 @@ class KAMA_MSR:
                 msr_probs=self.msr_regime_probs,
                 method=kama_optimization_method,
                 n_random_trials=n_random_trials,
-                n_lookback=self.n_lookback,
                 gamma=self.gamma,
                 verbose=True
             )
@@ -1151,6 +1152,7 @@ class KAMA_MSR:
         
         # Step 3: Calculate KAMA and filter
         print("\n[3/5] Calculating KAMA and filter...")
+        print(f"   Using n={self.kama.n} for BOTH ER and filter windows (per paper)")
         self.kama_values, self.kama_er, self.kama_sc = self.kama.calculate_kama(self.prices)
         self.filter_values = self.calculate_kama_filter(self.kama_values)
         
@@ -1348,31 +1350,6 @@ class KAMA_MSR:
         ax4.legend(loc='best', ncol=2)
         ax4.grid(True, alpha=0.3)
 
-        # # Plot 3: KAMA Filter
-        # ax2 = axes[2]
-        # ax2.plot(self.filter_values.index, self.filter_values, 
-        #         label='KAMA Filter', color='purple', linewidth=1.5)
-        # ax2.set_title('KAMA Filter (γ × σ(KAMA))')
-        # ax2.set_ylabel('Filter Value')
-        # ax2.legend()
-        # ax2.grid(True, alpha=0.3)
-        
-        # # Plot 4: MSR Probabilities
-        # ax3 = axes[3]
-        # msr_colors = ['blue', 'orange', 'red'] if self.use_three_state_msr else ['blue', 'red']
-        # msr_labels = ['Low', 'Medium', 'High'] if self.use_three_state_msr else ['Low', 'High']
-        
-        # for i in range(self.msr.n_regimes):
-        #     ax3.plot(self.msr_regime_probs.index, self.msr_regime_probs[f'Regime_{i}'],
-        #             label=msr_labels[i], color=msr_colors[i], linewidth=1.5)
-        
-        # ax3.axhline(y=0.5, color='gray', linestyle='--', alpha=0.5)
-        # ax3.set_title('MSR Variance Regime Probabilities')
-        # ax3.set_ylabel('Probability')
-        # ax3.set_ylim(0, 1)
-        # ax3.legend()
-        # ax3.grid(True, alpha=0.3)
-        
         plt.tight_layout()
         plt.show()
 
@@ -1409,8 +1386,6 @@ class KAMA_MSR:
         print(f"  n (ER period): {self.kama.n}")
         print(f"  n_fast: {self.kama.n_fast}")
         print(f"  n_slow: {self.kama.n_slow}")
-        print(f"\nKAMA Filter Parameters:")
-        print(f"  n_lookback: {self.n_lookback}")
         print(f"  gamma: {self.gamma}")
         
         # Combined regime classification
@@ -1586,7 +1561,7 @@ class KAMA_MSR:
         #         print(f"  Regime Separation Score: Infinite (zero within-variance)")
         # else:
         #     print(f"  Regime Separation Score: Not calculable (fewer than 2 regimes present)")
-
+    
     def plot_comprehensive_analysis(self, data: Optional[pd.DataFrame] = None,
                                     regime_probs: Optional[pd.DataFrame] = None,
                                     data_name: str = "Asset",
