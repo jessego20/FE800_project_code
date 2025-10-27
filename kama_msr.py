@@ -13,6 +13,8 @@ import pickle
 from itertools import product
 import random
 from sklearn.cluster import KMeans
+from IPython.display import display
+
 
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
@@ -220,7 +222,7 @@ def compute_segment_features(prices: pd.Series,
                              regime_labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute slope and volatility for each regime segment (NA-safe, index-aligned).
-    
+
     Parameters:
     -----------
     prices : pd.Series
@@ -229,7 +231,7 @@ def compute_segment_features(prices: pd.Series,
         Return series
     regime_labels : pd.Series
         Regime labels (may contain NAs)
-    
+
     Returns:
     --------
     Tuple[np.ndarray, np.ndarray] : (slopes, volatilities) aligned with regime_labels index
@@ -237,51 +239,51 @@ def compute_segment_features(prices: pd.Series,
     # Initialize with zeros (same length as input)
     slopes = np.zeros(len(regime_labels))
     volatilities = np.zeros(len(regime_labels))
-    
+
     # Work only on valid regime labels
     valid_mask = regime_labels.notna()
     if not valid_mask.any():
         return slopes, volatilities
-    
+
     labels_clean = regime_labels[valid_mask]
     prices_clean = prices.loc[labels_clean.index]
     returns_clean = returns.loc[labels_clean.index]
-    
+
     # Compute features for each segment
     current_regime = labels_clean.iloc[0]
     start_idx = 0
-    
+
     for i in range(1, len(labels_clean) + 1):
         if i == len(labels_clean) or labels_clean.iloc[i] != current_regime:
             end_idx = i
-            
+
             # Get segment data
             segment_prices = prices_clean.iloc[start_idx:end_idx]
             segment_returns = returns_clean.iloc[start_idx:end_idx]
-            
+
             if len(segment_prices) > 1:
                 # Compute slope
                 log_prices = np.log(segment_prices.values)
                 time_idx = np.arange(len(log_prices))
                 slope = np.polyfit(time_idx, log_prices, 1)[0]
-                
+
                 # Compute volatility
                 volatility = segment_returns.std()
             else:
                 slope = 0.0
                 volatility = 0.0
-            
+
             # Map back to original index positions
             segment_indices = labels_clean.index[start_idx:end_idx]
             for idx in segment_indices:
                 pos = regime_labels.index.get_loc(idx)
                 slopes[pos] = slope
                 volatilities[pos] = volatility
-            
+
             if i < len(labels_clean):
                 current_regime = labels_clean.iloc[i]
                 start_idx = i
-    
+
     return slopes, volatilities
 
 def calculate_misclassification_score(regime_labels: np.ndarray,
@@ -601,7 +603,7 @@ class KAMA:
                 'n': [5, 10, 15, 20, 25, 30],
                 'n_fast': [2, 5, 10],
                 'n_slow': [20, 30, 40, 50, 60],
-                'gamma': [0.5, 1.0, 1.5, 2.0]
+                'gamma': [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
             }
             
             coarse_candidates = list(product(
@@ -1023,19 +1025,6 @@ class KAMA_MSR:
                 self.regime_labels, min_duration, method
             )
             self.regime_probs = self._calculate_regime_probabilities()
-    
-    def analyze_regime_durations(self) -> pd.DataFrame:
-        """
-        Analyze duration statistics for each regime.
-        
-        Returns:
-        --------
-        pd.DataFrame : Statistics with min, max, mean, median durations per regime
-        """
-        if not hasattr(self, 'regime_labels') or self.regime_labels is None:
-            raise ValueError("Model must be fitted before analyzing durations")
-        
-        return analyze_regime_durations(self.regime_labels)
 
     def calculate_kama_filter(self, kama_series: pd.Series) -> pd.Series:
         """
@@ -1295,6 +1284,21 @@ class KAMA_MSR:
         print(f"\nTotal regime changes: {changes}")
         print(f"Average regime duration: {total_periods / (changes + 1):.1f} periods")
     
+    # Analysis and Visualization Methods
+
+    def analyze_regime_durations(self) -> pd.DataFrame:
+        """
+        Analyze duration statistics for each regime.
+        
+        Returns:
+        --------
+        pd.DataFrame : Statistics with min, max, mean, median durations per regime
+        """
+        if not hasattr(self, 'regime_labels') or self.regime_labels is None:
+            raise ValueError("Model must be fitted before analyzing durations")
+        
+        return analyze_regime_durations(self.regime_labels)
+
     def plot_regimes(self, figsize=(16, 8), data_name: str = "Asset"):
         """Plot prices, KAMA, filter, and regime classification"""
         if self.regime_labels is None:
@@ -1650,6 +1654,202 @@ class KAMA_MSR:
         
         plt.tight_layout()
         plt.show()
+
+    def regime_transition_analysis(self):
+        """
+        Comprehensive regime transition analysis method for KAMA_MSR class
+
+        This method verifies the patterns you observed:
+        1. Low vol bear regimes having higher returns due to transition rallies
+        2. Transitions from high vol bear -> low vol bear -> low vol bull
+        3. High vol bull regimes occurring within low vol bull (pullbacks)
+        4. KAMA signal responsiveness validation
+
+        Parameters:
+        -----------
+        statistical_tests : bool, default=True
+            Whether to perform statistical tests on regime returns
+        pattern_analysis : bool, default=True
+            Whether to analyze sequential patterns
+        transition_analysis : bool, default=True
+            Whether to analyze transition probabilities and returns
+        duration_analysis : bool, default=True
+            Whether to analyze regime durations
+        sharp_move_analysis : bool, default=True
+            Whether to analyze sharp moves and their relation to transitions
+        return_percentile_threshold : float, default=95.0
+            Percentile threshold for identifying sharp moves
+        min_sequence_length : int, default=3
+            Minimum length for sequential pattern analysis
+        verbose : bool, default=True
+            Whether to print detailed results
+
+        Returns:
+        --------
+        dict : Dictionary containing all analysis results
+        """
+        import pandas as pd
+        import numpy as np
+        from scipy.stats import ttest_ind
+        from collections import defaultdict
+
+        if self.regime_labels is None:
+            raise ValueError("Model must be fitted before running transition analysis")
+
+        # Prepare data
+        regime_data = pd.DataFrame({
+            'date': self.regime_labels.index,
+            'regime': self.regime_labels.values,
+            'return': self.returns.reindex(self.regime_labels.index).values,
+            '20-day rolling volatility': self.returns.reindex(self.regime_labels.index).rolling(20).std().values
+        }).dropna()
+
+        results = {}
+
+        print()
+        print("="*80)
+        print("REGIME TRANSITION ANALYSIS")
+        print("="*80)
+
+        # Define regime names for interpretation
+        if self.n_combined_regimes == 4:
+            regime_names = {
+                0: 'Low Vol Bull', 1: 'Low Vol Bear', 
+                2: 'High Vol Bull', 3: 'High Vol Bear'
+            }
+        else:  # 6 regimes
+            regime_names = {
+                0: 'Low Vol Bull', 1: 'Low Vol Bear',
+                2: 'Med Vol Bull', 3: 'Med Vol Bear',
+                4: 'High Vol Bull', 5: 'High Vol Bear'
+            }
+
+        # Basic transition matrix and probabilities
+        print("\nComputing transition matrices...")
+
+        transitions = []
+        for i in range(1, len(regime_data)):
+            from_regime = regime_data.iloc[i-1]['regime']
+            to_regime = regime_data.iloc[i]['regime']
+            transitions.append((from_regime, to_regime, regime_data.iloc[i]['return']))
+
+        transition_df = pd.DataFrame(transitions, columns=['from', 'to', 'return'])
+
+        # Create transition matrix
+        regimes = list(regime_data['regime'].unique())
+        regimes.sort()
+        transition_matrix = pd.crosstab(transition_df['from'], transition_df['to'])
+
+        # Ensure all regimes are included
+        for regime in regimes:
+            if regime not in transition_matrix.index:
+                transition_matrix.loc[regime] = 0
+            if regime not in transition_matrix.columns:
+                transition_matrix[regime] = 0
+
+        transition_matrix = transition_matrix.reindex(index=regimes, columns=regimes, fill_value=0)
+        transition_probs = transition_matrix.div(transition_matrix.sum(axis=1), axis=0).fillna(0)
+
+        results['transition_matrix'] = transition_matrix
+        results['transition_probabilities'] = transition_probs
+
+        # print(f"   Found {len(transitions)} total transitions")
+        print("   Transition Probabilities:")
+        for from_regime in regimes:
+            print()
+            for to_regime in regimes:
+                if from_regime != to_regime: # and transition_probs.loc[from_regime, to_regime] > 0.05:
+                    prob = transition_probs.loc[from_regime, to_regime]
+                    print(f"     {regime_names.get(from_regime, from_regime)} → {regime_names.get(to_regime, to_regime)}: {prob:.1%}")
+
+        print("\nComputing Level Two (conditional) transition probabilities...")
+
+        # Extract regime change sequence (remove consecutive duplicates)
+        regime_seq = list(regime_data['regime'])
+        regime_changes = [regime_seq[0]]
+
+        for i in range(1, len(regime_seq)):
+            if regime_seq[i] != regime_seq[i-1]:
+                regime_changes.append(regime_seq[i])
+
+        print(f"   Total observations: {len(regime_seq)}")
+        print(f"   Number of distinct regime periods: {len(regime_changes)}")
+
+        # Count level-two transitions
+        level_two_counts = {}
+        level_two_total = {}
+
+        for i in range(2, len(regime_changes)):
+            r_prev = regime_changes[i-2]
+            r_curr = regime_changes[i-1]
+            r_next = regime_changes[i]
+
+            key = (r_prev, r_curr)
+            if key not in level_two_counts:
+                level_two_counts[key] = {r: 0 for r in regimes}
+                level_two_total[key] = 0
+
+            level_two_counts[key][r_next] += 1
+            level_two_total[key] += 1
+
+        # Build probability matrix
+        level_two_data = []
+        level_two_index = []
+
+        for r_prev in regimes:
+            for r_curr in regimes:
+                key = (r_prev, r_curr)
+                if key in level_two_counts and level_two_total[key] > 0:
+                    probs = [level_two_counts[key][r_next]/level_two_total[key] for r_next in regimes]
+                    count = level_two_total[key]
+                    level_two_index.append(f"{regime_names.get(r_prev, r_prev)} → {regime_names.get(r_curr, r_curr)} (n={count})")
+                    level_two_data.append(probs)
+
+        level_two_matrix = pd.DataFrame(
+            level_two_data, 
+            index=level_two_index,
+            columns=[regime_names.get(r, r) for r in regimes]
+        )
+
+        results['level_two_transition_probabilities'] = level_two_matrix
+        results['regime_change_sequence'] = regime_changes
+
+        print("   Level Two Transition Probabilities (Regime-to-Regime):")
+        print()
+        for idx, row in level_two_matrix.iterrows():
+            print(f"   {idx}:")
+            for regime_name, prob in row.items():
+                if prob > 0:
+                    print(f"      → {regime_name}: {prob:.1%}")
+            print()
+
+        # Key pattern analysis for your hypothesis
+        print("   KEY PATTERNS:")
+        print()
+
+        # Pattern 1: High Vol Bear → Low Vol Bear → ?
+        pattern_name = f"{regime_names.get(3, 3)} → {regime_names.get(1, 1)}"
+        if any(pattern_name in idx for idx in level_two_matrix.index):
+            matching_rows = level_two_matrix[level_two_matrix.index.str.contains(pattern_name)]
+            for idx, row in matching_rows.iterrows():
+                print(f"   {idx}:")
+                for regime_name, prob in row.items():
+                    if prob > 0:
+                        print(f"      → {regime_name}: {prob:.1%}")
+                print()
+
+        # Pattern 2: Low Vol Bull → High Vol Bull → ?
+        pattern_name = f"{regime_names.get(0, 0)} → {regime_names.get(2, 2)}"
+        if any(pattern_name in idx for idx in level_two_matrix.index):
+            matching_rows = level_two_matrix[level_two_matrix.index.str.contains(pattern_name)]
+            for idx, row in matching_rows.iterrows():
+                print(f"   {idx}:")
+                for regime_name, prob in row.items():
+                    if prob > 0:
+                        print(f"      → {regime_name}: {prob:.1%}")
+                print()
+
+        return regime_data, results
 
 # ============================================================================
 # END OF SCRIPT
