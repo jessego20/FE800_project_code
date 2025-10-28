@@ -492,8 +492,8 @@ class KAMA:
         if param_grid is None:
             param_grid = {
                 'n': [10, 15, 20, 25],
-                'n_fast': [2, 5, 8, 12],
-                'n_slow': [15, 22, 27, 33],
+                'n_fast': [3, 5, 8, 10, 12],
+                'n_slow': [23, 28, 33, 38, 43],
                 'gamma': [0.5, 0.75, 1.0, 1.25, 1.5]
             }
         
@@ -601,8 +601,8 @@ class KAMA:
             
             coarse_grid = {
                 'n': [10, 15, 20, 25],
-                'n_fast': [2, 5, 8, 12],
-                'n_slow': [15, 22, 27, 33],
+                'n_fast': [3, 5, 8, 10, 12],
+                'n_slow': [23, 28, 33, 38, 43],
                 'gamma': [0.5, 0.75, 1.0, 1.25, 1.5]
             }
             
@@ -630,8 +630,8 @@ class KAMA:
             
             fine_grid = {
                 'n': list(range(n_best-2, n_best+2)),
-                'n_fast': list(range(nf_best-2, nf_best+2)),
-                'n_slow': list(range(ns_best-2, ns_best+2)),
+                'n_fast': list(range(nf_best-1, nf_best+1)),
+                'n_slow': list(range(ns_best-3, ns_best+3)),
                 'gamma': list(np.arange(g_best-0.2, g_best+0.2, 0.1))
             }
             
@@ -1655,7 +1655,7 @@ class KAMA_MSR:
         plt.tight_layout()
         plt.show()
 
-    def regime_transition_analysis(self):
+    def regime_transition_analysis(self, in_depth: bool = False) -> Tuple[pd.DataFrame, dict]:
         """
         Comprehensive regime transition analysis method for KAMA_MSR class
 
@@ -1830,6 +1830,8 @@ class KAMA_MSR:
                     print(f"      → {regime_name}: {prob:.1%}")
             print()
 
+        if not in_depth:
+            return regime_data, results
         # Helper function to format dates safely
         def format_date(date_obj):
             """Safely format a date object, handling both datetime and numeric indices"""
@@ -1939,7 +1941,7 @@ class KAMA_MSR:
 
                         print(f"      Start (Low Vol Bull):    {format_date(instance['date_start'])} | Price: ${p0:.2f}")
                         print(f"      Trans1 (High Vol Bull):  {format_date(instance['date_transition1'])} | Price: ${p1:.2f} | Return: {ret1:+.2f}%")
-                        print(f"      Trans2 ({next_regime_name}): {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
+                        print(f"      Trans2 ({next_regime_name}):   {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
                         print(f"      End:                     {format_date(instance['date_end'])} | Price: ${p3:.2f} | Return: {ret3:+.2f}%")
                         print(f"      Total Return (Start→End): {ret_total:+.2f}%")
                     else:
