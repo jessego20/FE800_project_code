@@ -491,10 +491,10 @@ class KAMA:
         """
         if param_grid is None:
             param_grid = {
-                'n': [5, 7, 10, 12, 15, 20, 25, 30],
-                'n_fast': [2, 3, 5, 7, 10],
-                'n_slow': [20, 25, 30, 40, 50, 60],
-                'gamma': [0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+                'n': [10, 15, 20, 25],
+                'n_fast': [2, 5, 8, 12],
+                'n_slow': [15, 22, 27, 33],
+                'gamma': [0.5, 0.75, 1.0, 1.25, 1.5]
             }
         
         def objective(params):
@@ -600,10 +600,10 @@ class KAMA:
                 print("Stage 1: Coarse grid search...")
             
             coarse_grid = {
-                'n': [5, 10, 15, 20, 25, 30],
-                'n_fast': [2, 5, 10],
-                'n_slow': [20, 30, 40, 50, 60],
-                'gamma': [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+                'n': [10, 15, 20, 25],
+                'n_fast': [2, 5, 8, 12],
+                'n_slow': [15, 22, 27, 33],
+                'gamma': [0.5, 0.75, 1.0, 1.25, 1.5]
             }
             
             coarse_candidates = list(product(
@@ -629,10 +629,10 @@ class KAMA:
             n_best, nf_best, ns_best, g_best = best_params
             
             fine_grid = {
-                'n': list(range(max(5, n_best-3), min(31, n_best+4))),
-                'n_fast': list(range(max(2, nf_best-1), min(11, nf_best+2))),
-                'n_slow': list(range(max(20, ns_best-10), min(61, ns_best+11), 5)),
-                'gamma': [max(0.5, g_best-0.25), g_best, min(2.0, g_best+0.25)]
+                'n': list(range(n_best-2, n_best+2)),
+                'n_fast': list(range(nf_best-2, nf_best+2)),
+                'n_slow': list(range(ns_best-2, ns_best+2)),
+                'gamma': list(np.arange(g_best-0.2, g_best+0.2, 0.1))
             }
             
             fine_candidates = list(product(
@@ -1665,33 +1665,14 @@ class KAMA_MSR:
         3. High vol bull regimes occurring within low vol bull (pullbacks)
         4. KAMA signal responsiveness validation
 
-        Parameters:
-        -----------
-        statistical_tests : bool, default=True
-            Whether to perform statistical tests on regime returns
-        pattern_analysis : bool, default=True
-            Whether to analyze sequential patterns
-        transition_analysis : bool, default=True
-            Whether to analyze transition probabilities and returns
-        duration_analysis : bool, default=True
-            Whether to analyze regime durations
-        sharp_move_analysis : bool, default=True
-            Whether to analyze sharp moves and their relation to transitions
-        return_percentile_threshold : float, default=95.0
-            Percentile threshold for identifying sharp moves
-        min_sequence_length : int, default=3
-            Minimum length for sequential pattern analysis
-        verbose : bool, default=True
-            Whether to print detailed results
-
         Returns:
         --------
-        dict : Dictionary containing all analysis results
+        tuple: (regime_data DataFrame, results dict)
+            - regime_data: DataFrame with regime information
+            - results: Dictionary containing all analysis results
         """
-        import pandas as pd
-        import numpy as np
-        from scipy.stats import ttest_ind
-        from collections import defaultdict
+        # from scipy.stats import ttest_ind
+        # from collections import defaultdict
 
         if self.regime_labels is None:
             raise ValueError("Model must be fitted before running transition analysis")
@@ -1700,6 +1681,7 @@ class KAMA_MSR:
         regime_data = pd.DataFrame({
             'date': self.regime_labels.index,
             'regime': self.regime_labels.values,
+            'close_price': self.prices.reindex(self.regime_labels.index).values,
             'return': self.returns.reindex(self.regime_labels.index).values,
             '20-day rolling volatility': self.returns.reindex(self.regime_labels.index).rolling(20).std().values
         }).dropna()
@@ -1753,31 +1735,38 @@ class KAMA_MSR:
         results['transition_matrix'] = transition_matrix
         results['transition_probabilities'] = transition_probs
 
-        # print(f"   Found {len(transitions)} total transitions")
         print("   Transition Probabilities:")
         for from_regime in regimes:
             print()
             for to_regime in regimes:
-                if from_regime != to_regime: # and transition_probs.loc[from_regime, to_regime] > 0.05:
+                if from_regime != to_regime:
                     prob = transition_probs.loc[from_regime, to_regime]
                     print(f"     {regime_names.get(from_regime, from_regime)} → {regime_names.get(to_regime, to_regime)}: {prob:.1%}")
 
+        # Level-two (conditional) transition probabilities 
         print("\nComputing Level Two (conditional) transition probabilities...")
 
         # Extract regime change sequence (remove consecutive duplicates)
         regime_seq = list(regime_data['regime'])
         regime_changes = [regime_seq[0]]
+        regime_change_indices = [0]  # Track indices instead of dates directly
 
         for i in range(1, len(regime_seq)):
             if regime_seq[i] != regime_seq[i-1]:
                 regime_changes.append(regime_seq[i])
+                regime_change_indices.append(i)
+
+        # Extract dates and prices using the indices
+        regime_change_dates = [regime_data.iloc[i]['date'] for i in regime_change_indices]
+        regime_change_prices = [regime_data.iloc[i]['close_price'] for i in regime_change_indices]
 
         print(f"   Total observations: {len(regime_seq)}")
         print(f"   Number of distinct regime periods: {len(regime_changes)}")
 
-        # Count level-two transitions
+        # Count level-two transitions and track instances for price analysis
         level_two_counts = {}
         level_two_total = {}
+        level_two_instances = {}
 
         for i in range(2, len(regime_changes)):
             r_prev = regime_changes[i-2]
@@ -1788,9 +1777,26 @@ class KAMA_MSR:
             if key not in level_two_counts:
                 level_two_counts[key] = {r: 0 for r in regimes}
                 level_two_total[key] = 0
+                level_two_instances[key] = []
 
             level_two_counts[key][r_next] += 1
             level_two_total[key] += 1
+
+            # Store instance details
+            end_idx = regime_change_indices[i+1] if i+1 < len(regime_change_indices) else len(regime_data)-1
+
+            instance = {
+                'sequence': (r_prev, r_curr, r_next),
+                'date_start': regime_change_dates[i-2],
+                'date_transition1': regime_change_dates[i-1],
+                'date_transition2': regime_change_dates[i],
+                'date_end': regime_data.iloc[end_idx]['date'],
+                'price_start': regime_change_prices[i-2],
+                'price_transition1': regime_change_prices[i-1],
+                'price_transition2': regime_change_prices[i],
+                'price_end': regime_data.iloc[end_idx]['close_price']
+            }
+            level_two_instances[key].append(instance)
 
         # Build probability matrix
         level_two_data = []
@@ -1813,6 +1819,7 @@ class KAMA_MSR:
 
         results['level_two_transition_probabilities'] = level_two_matrix
         results['regime_change_sequence'] = regime_changes
+        results['level_two_instances'] = level_two_instances
 
         print("   Level Two Transition Probabilities (Regime-to-Regime):")
         print()
@@ -1823,31 +1830,148 @@ class KAMA_MSR:
                     print(f"      → {regime_name}: {prob:.1%}")
             print()
 
-        # Key pattern analysis for your hypothesis
+        # Helper function to format dates safely
+        def format_date(date_obj):
+            """Safely format a date object, handling both datetime and numeric indices"""
+            if isinstance(date_obj, (pd.Timestamp, pd.DatetimeIndex)):
+                return date_obj.strftime('%Y-%m-%d')
+            elif hasattr(date_obj, 'date'):
+                return str(date_obj.date())
+            else:
+                return str(date_obj)
+
+        print("   " + "="*80)
         print("   KEY PATTERNS:")
+        print("   " + "="*80)
         print()
 
         # Pattern 1: High Vol Bear → Low Vol Bear → ?
-        pattern_name = f"{regime_names.get(3, 3)} → {regime_names.get(1, 1)}"
-        if any(pattern_name in idx for idx in level_two_matrix.index):
-            matching_rows = level_two_matrix[level_two_matrix.index.str.contains(pattern_name)]
-            for idx, row in matching_rows.iterrows():
-                print(f"   {idx}:")
-                for regime_name, prob in row.items():
-                    if prob > 0:
-                        print(f"      → {regime_name}: {prob:.1%}")
+        pattern_key = (3, 1)  # High Vol Bear → Low Vol Bear
+        if pattern_key in level_two_instances:
+            instances = level_two_instances[pattern_key]
+            print(f"   Pattern: High Vol Bear → Low Vol Bear (n={len(instances)})")
+            print("   " + "-"*80)
+
+            for idx, instance in enumerate(instances, 1):
+                r_next = instance['sequence'][2]
+                next_regime_name = regime_names.get(r_next, r_next)
+
+                print(f"   Instance {idx}: High Vol Bear → Low Vol Bear → {next_regime_name}")
+
+                if instance['price_start'] is not None and not np.isnan(instance['price_start']):
+                    # Calculate returns at each transition
+                    p0 = instance['price_start']
+                    p1 = instance['price_transition1']
+                    p2 = instance['price_transition2']
+                    p3 = instance['price_end']
+
+                    # Check for NaN values
+                    if all(not np.isnan(p) for p in [p0, p1, p2, p3]):
+                        ret1 = (p1 / p0 - 1) * 100
+                        ret2 = (p2 / p1 - 1) * 100
+                        ret3 = (p3 / p2 - 1) * 100
+                        ret_total = (p3 / p0 - 1) * 100
+
+                        print(f"      Start (High Vol Bear):   {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                        print(f"      Trans1 (Low Vol Bear):   {format_date(instance['date_transition1'])} | Price: ${p1:.2f} | Return: {ret1:+.2f}%")
+                        print(f"      Trans2 ({next_regime_name}):   {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
+                        print(f"      End:                     {format_date(instance['date_end'])} | Price: ${p3:.2f} | Return: {ret3:+.2f}%")
+                        print(f"      Total Return (Start→End): {ret_total:+.2f}%")
+                    else:
+                        print(f"      Start: {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                        print(f"      [Some prices contain NaN values]")
+                else:
+                    print(f"      Start: {format_date(instance['date_start'])}")
+                    print(f"      Trans1: {format_date(instance['date_transition1'])}")
+                    print(f"      Trans2: {format_date(instance['date_transition2'])}")
+                    print(f"      End: {format_date(instance['date_end'])}")
                 print()
 
+            # Summary statistics for this pattern
+            if len(instances) > 0:
+                # Filter out instances with NaN values
+                valid_instances = [i for i in instances 
+                                if i['price_start'] is not None 
+                                and not np.isnan(i['price_start'])
+                                and not np.isnan(i['price_transition1'])
+                                and not np.isnan(i['price_transition2'])
+                                and not np.isnan(i['price_end'])]
+
+                if len(valid_instances) > 0:
+                    returns_to_trans1 = [(i['price_transition1']/i['price_start']-1)*100 for i in valid_instances]
+                    returns_to_trans2 = [(i['price_transition2']/i['price_start']-1)*100 for i in valid_instances]
+                    returns_total = [(i['price_end']/i['price_start']-1)*100 for i in valid_instances]
+
+                    print(f"   Summary Statistics (n={len(valid_instances)}):")
+                    print(f"      Avg return (Start → Trans1): {np.mean(returns_to_trans1):+.2f}%")
+                    print(f"      Avg return (Start → Trans2): {np.mean(returns_to_trans2):+.2f}%")
+                    print(f"      Avg return (Start → End):    {np.mean(returns_total):+.2f}%")
+                    print()
+
+        print()
+
         # Pattern 2: Low Vol Bull → High Vol Bull → ?
-        pattern_name = f"{regime_names.get(0, 0)} → {regime_names.get(2, 2)}"
-        if any(pattern_name in idx for idx in level_two_matrix.index):
-            matching_rows = level_two_matrix[level_two_matrix.index.str.contains(pattern_name)]
-            for idx, row in matching_rows.iterrows():
-                print(f"   {idx}:")
-                for regime_name, prob in row.items():
-                    if prob > 0:
-                        print(f"      → {regime_name}: {prob:.1%}")
+        pattern_key = (0, 2)  # Low Vol Bull → High Vol Bull
+        if pattern_key in level_two_instances:
+            instances = level_two_instances[pattern_key]
+            print(f"   Pattern: Low Vol Bull → High Vol Bull (n={len(instances)})")
+            print("   " + "-"*80)
+
+            for idx, instance in enumerate(instances, 1):
+                r_next = instance['sequence'][2]
+                next_regime_name = regime_names.get(r_next, r_next)
+
+                print(f"   Instance {idx}: Low Vol Bull → High Vol Bull → {next_regime_name}")
+
+                if instance['price_start'] is not None and not np.isnan(instance['price_start']):
+                    # Calculate returns at each transition
+                    p0 = instance['price_start']
+                    p1 = instance['price_transition1']
+                    p2 = instance['price_transition2']
+                    p3 = instance['price_end']
+
+                    # Check for NaN values
+                    if all(not np.isnan(p) for p in [p0, p1, p2, p3]):
+                        ret1 = (p1 / p0 - 1) * 100
+                        ret2 = (p2 / p1 - 1) * 100
+                        ret3 = (p3 / p2 - 1) * 100
+                        ret_total = (p3 / p0 - 1) * 100
+
+                        print(f"      Start (Low Vol Bull):    {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                        print(f"      Trans1 (High Vol Bull):  {format_date(instance['date_transition1'])} | Price: ${p1:.2f} | Return: {ret1:+.2f}%")
+                        print(f"      Trans2 ({next_regime_name}): {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
+                        print(f"      End:                     {format_date(instance['date_end'])} | Price: ${p3:.2f} | Return: {ret3:+.2f}%")
+                        print(f"      Total Return (Start→End): {ret_total:+.2f}%")
+                    else:
+                        print(f"      Start: {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                        print(f"      [Some prices contain NaN values]")
+                else:
+                    print(f"      Start: {format_date(instance['date_start'])}")
+                    print(f"      Trans1: {format_date(instance['date_transition1'])}")
+                    print(f"      Trans2: {format_date(instance['date_transition2'])}")
+                    print(f"      End: {format_date(instance['date_end'])}")
                 print()
+
+            # Summary statistics for this pattern
+            if len(instances) > 0:
+                # Filter out instances with NaN values
+                valid_instances = [i for i in instances 
+                                if i['price_start'] is not None 
+                                and not np.isnan(i['price_start'])
+                                and not np.isnan(i['price_transition1'])
+                                and not np.isnan(i['price_transition2'])
+                                and not np.isnan(i['price_end'])]
+
+                if len(valid_instances) > 0:
+                    returns_to_trans1 = [(i['price_transition1']/i['price_start']-1)*100 for i in valid_instances]
+                    returns_to_trans2 = [(i['price_transition2']/i['price_start']-1)*100 for i in valid_instances]
+                    returns_total = [(i['price_end']/i['price_start']-1)*100 for i in valid_instances]
+
+                    print(f"   Summary Statistics (n={len(valid_instances)}):")
+                    print(f"      Avg return (Start → Trans1): {np.mean(returns_to_trans1):+.2f}%")
+                    print(f"      Avg return (Start → Trans2): {np.mean(returns_to_trans2):+.2f}%")
+                    print(f"      Avg return (Start → End):    {np.mean(returns_total):+.2f}%")
+                    print()
 
         return regime_data, results
 
