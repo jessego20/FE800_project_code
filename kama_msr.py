@@ -1758,7 +1758,7 @@ class KAMA_MSR:
 
         # Extract dates and prices using the indices
         regime_change_dates = [regime_data.iloc[i]['date'] for i in regime_change_indices]
-        regime_change_prices = [regime_data.iloc[i]['close_price'] for i in regime_change_indices]
+        regime_change_prices = [regime_data.iloc[i-1]['close_price'] for i in regime_change_indices]
 
         print(f"   Total observations: {len(regime_seq)}")
         print(f"   Number of distinct regime periods: {len(regime_changes)}")
