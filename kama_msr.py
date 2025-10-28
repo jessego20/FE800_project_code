@@ -1743,7 +1743,9 @@ class KAMA_MSR:
                     prob = transition_probs.loc[from_regime, to_regime]
                     print(f"     {regime_names.get(from_regime, from_regime)} → {regime_names.get(to_regime, to_regime)}: {prob:.1%}")
 
+        # ====================================================================== #
         # Level-two (conditional) transition probabilities 
+        # ====================================================================== #
         print("\nComputing Level Two (conditional) transition probabilities...")
 
         # Extract regime change sequence (remove consecutive duplicates)
@@ -1830,150 +1832,149 @@ class KAMA_MSR:
                     print(f"      → {regime_name}: {prob:.1%}")
             print()
 
-        if not in_depth:
-            return regime_data, results
-        # Helper function to format dates safely
-        def format_date(date_obj):
-            """Safely format a date object, handling both datetime and numeric indices"""
-            if isinstance(date_obj, (pd.Timestamp, pd.DatetimeIndex)):
-                return date_obj.strftime('%Y-%m-%d')
-            elif hasattr(date_obj, 'date'):
-                return str(date_obj.date())
-            else:
-                return str(date_obj)
-
-        print("   " + "="*80)
-        print("   KEY PATTERNS:")
-        print("   " + "="*80)
-        print()
-
-        # Pattern 1: High Vol Bear → Low Vol Bear → ?
-        pattern_key = (3, 1)  # High Vol Bear → Low Vol Bear
-        if pattern_key in level_two_instances:
-            instances = level_two_instances[pattern_key]
-            print(f"   Pattern: High Vol Bear → Low Vol Bear (n={len(instances)})")
-            print("   " + "-"*80)
-
-            for idx, instance in enumerate(instances, 1):
-                r_next = instance['sequence'][2]
-                next_regime_name = regime_names.get(r_next, r_next)
-
-                print(f"   Instance {idx}: High Vol Bear → Low Vol Bear → {next_regime_name}")
-
-                if instance['price_start'] is not None and not np.isnan(instance['price_start']):
-                    # Calculate returns at each transition
-                    p0 = instance['price_start']
-                    p1 = instance['price_transition1']
-                    p2 = instance['price_transition2']
-                    p3 = instance['price_end']
-
-                    # Check for NaN values
-                    if all(not np.isnan(p) for p in [p0, p1, p2, p3]):
-                        ret1 = (p1 / p0 - 1) * 100
-                        ret2 = (p2 / p1 - 1) * 100
-                        ret3 = (p3 / p2 - 1) * 100
-                        ret_total = (p3 / p0 - 1) * 100
-
-                        print(f"      Start (High Vol Bear):   {format_date(instance['date_start'])} | Price: ${p0:.2f}")
-                        print(f"      Trans1 (Low Vol Bear):   {format_date(instance['date_transition1'])} | Price: ${p1:.2f} | Return: {ret1:+.2f}%")
-                        print(f"      Trans2 ({next_regime_name}):   {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
-                        print(f"      End:                     {format_date(instance['date_end'])} | Price: ${p3:.2f} | Return: {ret3:+.2f}%")
-                        print(f"      Total Return (Start→End): {ret_total:+.2f}%")
-                    else:
-                        print(f"      Start: {format_date(instance['date_start'])} | Price: ${p0:.2f}")
-                        print(f"      [Some prices contain NaN values]")
+        if in_depth:
+            # Helper function to format dates safely
+            def format_date(date_obj):
+                """Safely format a date object, handling both datetime and numeric indices"""
+                if isinstance(date_obj, (pd.Timestamp, pd.DatetimeIndex)):
+                    return date_obj.strftime('%Y-%m-%d')
+                elif hasattr(date_obj, 'date'):
+                    return str(date_obj.date())
                 else:
-                    print(f"      Start: {format_date(instance['date_start'])}")
-                    print(f"      Trans1: {format_date(instance['date_transition1'])}")
-                    print(f"      Trans2: {format_date(instance['date_transition2'])}")
-                    print(f"      End: {format_date(instance['date_end'])}")
-                print()
+                    return str(date_obj)
 
-            # Summary statistics for this pattern
-            if len(instances) > 0:
-                # Filter out instances with NaN values
-                valid_instances = [i for i in instances 
-                                if i['price_start'] is not None 
-                                and not np.isnan(i['price_start'])
-                                and not np.isnan(i['price_transition1'])
-                                and not np.isnan(i['price_transition2'])
-                                and not np.isnan(i['price_end'])]
+            print("   " + "="*80)
+            print("   KEY PATTERNS:")
+            print("   " + "="*80)
+            print()
 
-                if len(valid_instances) > 0:
-                    returns_to_trans1 = [(i['price_transition1']/i['price_start']-1)*100 for i in valid_instances]
-                    returns_to_trans2 = [(i['price_transition2']/i['price_start']-1)*100 for i in valid_instances]
-                    returns_total = [(i['price_end']/i['price_start']-1)*100 for i in valid_instances]
+            # Pattern 1: High Vol Bear → Low Vol Bear → ?
+            pattern_key = (3, 1)  # High Vol Bear → Low Vol Bear
+            if pattern_key in level_two_instances:
+                instances = level_two_instances[pattern_key]
+                print(f"   Pattern: High Vol Bear → Low Vol Bear (n={len(instances)})")
+                print("   " + "-"*80)
 
-                    print(f"   Summary Statistics (n={len(valid_instances)}):")
-                    print(f"      Avg return (Start → Trans1): {np.mean(returns_to_trans1):+.2f}%")
-                    print(f"      Avg return (Start → Trans2): {np.mean(returns_to_trans2):+.2f}%")
-                    print(f"      Avg return (Start → End):    {np.mean(returns_total):+.2f}%")
+                for idx, instance in enumerate(instances, 1):
+                    r_next = instance['sequence'][2]
+                    next_regime_name = regime_names.get(r_next, r_next)
+
+                    print(f"   Instance {idx}: High Vol Bear → Low Vol Bear → {next_regime_name}")
+
+                    if instance['price_start'] is not None and not np.isnan(instance['price_start']):
+                        # Calculate returns at each transition
+                        p0 = instance['price_start']
+                        p1 = instance['price_transition1']
+                        p2 = instance['price_transition2']
+                        p3 = instance['price_end']
+
+                        # Check for NaN values
+                        if all(not np.isnan(p) for p in [p0, p1, p2, p3]):
+                            ret1 = (p1 / p0 - 1) * 100
+                            ret2 = (p2 / p1 - 1) * 100
+                            ret3 = (p3 / p2 - 1) * 100
+                            ret_total = (p3 / p0 - 1) * 100
+
+                            print(f"      Start (High Vol Bear):   {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                            print(f"      Trans1 (Low Vol Bear):   {format_date(instance['date_transition1'])} | Price: ${p1:.2f} | Return: {ret1:+.2f}%")
+                            print(f"      Trans2 ({next_regime_name}):   {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
+                            print(f"      End:                     {format_date(instance['date_end'])} | Price: ${p3:.2f} | Return: {ret3:+.2f}%")
+                            print(f"      Total Return (Start→End): {ret_total:+.2f}%")
+                        else:
+                            print(f"      Start: {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                            print(f"      [Some prices contain NaN values]")
+                    else:
+                        print(f"      Start: {format_date(instance['date_start'])}")
+                        print(f"      Trans1: {format_date(instance['date_transition1'])}")
+                        print(f"      Trans2: {format_date(instance['date_transition2'])}")
+                        print(f"      End: {format_date(instance['date_end'])}")
                     print()
 
-        print()
+                # Summary statistics for this pattern
+                if len(instances) > 0:
+                    # Filter out instances with NaN values
+                    valid_instances = [i for i in instances 
+                                    if i['price_start'] is not None 
+                                    and not np.isnan(i['price_start'])
+                                    and not np.isnan(i['price_transition1'])
+                                    and not np.isnan(i['price_transition2'])
+                                    and not np.isnan(i['price_end'])]
 
-        # Pattern 2: Low Vol Bull → High Vol Bull → ?
-        pattern_key = (0, 2)  # Low Vol Bull → High Vol Bull
-        if pattern_key in level_two_instances:
-            instances = level_two_instances[pattern_key]
-            print(f"   Pattern: Low Vol Bull → High Vol Bull (n={len(instances)})")
-            print("   " + "-"*80)
+                    if len(valid_instances) > 0:
+                        returns_to_trans1 = [(i['price_transition1']/i['price_start']-1)*100 for i in valid_instances]
+                        returns_to_trans2 = [(i['price_transition2']/i['price_start']-1)*100 for i in valid_instances]
+                        returns_total = [(i['price_end']/i['price_start']-1)*100 for i in valid_instances]
 
-            for idx, instance in enumerate(instances, 1):
-                r_next = instance['sequence'][2]
-                next_regime_name = regime_names.get(r_next, r_next)
+                        print(f"   Summary Statistics (n={len(valid_instances)}):")
+                        print(f"      Avg return (Start → Trans1): {np.mean(returns_to_trans1):+.2f}%")
+                        print(f"      Avg return (Start → Trans2): {np.mean(returns_to_trans2):+.2f}%")
+                        print(f"      Avg return (Start → End):    {np.mean(returns_total):+.2f}%")
+                        print()
 
-                print(f"   Instance {idx}: Low Vol Bull → High Vol Bull → {next_regime_name}")
+            print()
 
-                if instance['price_start'] is not None and not np.isnan(instance['price_start']):
-                    # Calculate returns at each transition
-                    p0 = instance['price_start']
-                    p1 = instance['price_transition1']
-                    p2 = instance['price_transition2']
-                    p3 = instance['price_end']
+            # Pattern 2: Low Vol Bull → High Vol Bull → ?
+            pattern_key = (0, 2)  # Low Vol Bull → High Vol Bull
+            if pattern_key in level_two_instances:
+                instances = level_two_instances[pattern_key]
+                print(f"   Pattern: Low Vol Bull → High Vol Bull (n={len(instances)})")
+                print("   " + "-"*80)
 
-                    # Check for NaN values
-                    if all(not np.isnan(p) for p in [p0, p1, p2, p3]):
-                        ret1 = (p1 / p0 - 1) * 100
-                        ret2 = (p2 / p1 - 1) * 100
-                        ret3 = (p3 / p2 - 1) * 100
-                        ret_total = (p3 / p0 - 1) * 100
+                for idx, instance in enumerate(instances, 1):
+                    r_next = instance['sequence'][2]
+                    next_regime_name = regime_names.get(r_next, r_next)
 
-                        print(f"      Start (Low Vol Bull):    {format_date(instance['date_start'])} | Price: ${p0:.2f}")
-                        print(f"      Trans1 (High Vol Bull):  {format_date(instance['date_transition1'])} | Price: ${p1:.2f} | Return: {ret1:+.2f}%")
-                        print(f"      Trans2 ({next_regime_name}):   {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
-                        print(f"      End:                     {format_date(instance['date_end'])} | Price: ${p3:.2f} | Return: {ret3:+.2f}%")
-                        print(f"      Total Return (Start→End): {ret_total:+.2f}%")
+                    print(f"   Instance {idx}: Low Vol Bull → High Vol Bull → {next_regime_name}")
+
+                    if instance['price_start'] is not None and not np.isnan(instance['price_start']):
+                        # Calculate returns at each transition
+                        p0 = instance['price_start']
+                        p1 = instance['price_transition1']
+                        p2 = instance['price_transition2']
+                        p3 = instance['price_end']
+
+                        # Check for NaN values
+                        if all(not np.isnan(p) for p in [p0, p1, p2, p3]):
+                            ret1 = (p1 / p0 - 1) * 100
+                            ret2 = (p2 / p1 - 1) * 100
+                            ret3 = (p3 / p2 - 1) * 100
+                            ret_total = (p3 / p0 - 1) * 100
+
+                            print(f"      Start (Low Vol Bull):    {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                            print(f"      Trans1 (High Vol Bull):  {format_date(instance['date_transition1'])} | Price: ${p1:.2f} | Return: {ret1:+.2f}%")
+                            print(f"      Trans2 ({next_regime_name}):   {format_date(instance['date_transition2'])} | Price: ${p2:.2f} | Return: {ret2:+.2f}%")
+                            print(f"      End:                     {format_date(instance['date_end'])} | Price: ${p3:.2f} | Return: {ret3:+.2f}%")
+                            print(f"      Total Return (Start→End): {ret_total:+.2f}%")
+                        else:
+                            print(f"      Start: {format_date(instance['date_start'])} | Price: ${p0:.2f}")
+                            print(f"      [Some prices contain NaN values]")
                     else:
-                        print(f"      Start: {format_date(instance['date_start'])} | Price: ${p0:.2f}")
-                        print(f"      [Some prices contain NaN values]")
-                else:
-                    print(f"      Start: {format_date(instance['date_start'])}")
-                    print(f"      Trans1: {format_date(instance['date_transition1'])}")
-                    print(f"      Trans2: {format_date(instance['date_transition2'])}")
-                    print(f"      End: {format_date(instance['date_end'])}")
-                print()
-
-            # Summary statistics for this pattern
-            if len(instances) > 0:
-                # Filter out instances with NaN values
-                valid_instances = [i for i in instances 
-                                if i['price_start'] is not None 
-                                and not np.isnan(i['price_start'])
-                                and not np.isnan(i['price_transition1'])
-                                and not np.isnan(i['price_transition2'])
-                                and not np.isnan(i['price_end'])]
-
-                if len(valid_instances) > 0:
-                    returns_to_trans1 = [(i['price_transition1']/i['price_start']-1)*100 for i in valid_instances]
-                    returns_to_trans2 = [(i['price_transition2']/i['price_start']-1)*100 for i in valid_instances]
-                    returns_total = [(i['price_end']/i['price_start']-1)*100 for i in valid_instances]
-
-                    print(f"   Summary Statistics (n={len(valid_instances)}):")
-                    print(f"      Avg return (Start → Trans1): {np.mean(returns_to_trans1):+.2f}%")
-                    print(f"      Avg return (Start → Trans2): {np.mean(returns_to_trans2):+.2f}%")
-                    print(f"      Avg return (Start → End):    {np.mean(returns_total):+.2f}%")
+                        print(f"      Start: {format_date(instance['date_start'])}")
+                        print(f"      Trans1: {format_date(instance['date_transition1'])}")
+                        print(f"      Trans2: {format_date(instance['date_transition2'])}")
+                        print(f"      End: {format_date(instance['date_end'])}")
                     print()
+
+                # Summary statistics for this pattern
+                if len(instances) > 0:
+                    # Filter out instances with NaN values
+                    valid_instances = [i for i in instances 
+                                    if i['price_start'] is not None 
+                                    and not np.isnan(i['price_start'])
+                                    and not np.isnan(i['price_transition1'])
+                                    and not np.isnan(i['price_transition2'])
+                                    and not np.isnan(i['price_end'])]
+
+                    if len(valid_instances) > 0:
+                        returns_to_trans1 = [(i['price_transition1']/i['price_start']-1)*100 for i in valid_instances]
+                        returns_to_trans2 = [(i['price_transition2']/i['price_start']-1)*100 for i in valid_instances]
+                        returns_total = [(i['price_end']/i['price_start']-1)*100 for i in valid_instances]
+
+                        print(f"   Summary Statistics (n={len(valid_instances)}):")
+                        print(f"      Avg return (Start → Trans1): {np.mean(returns_to_trans1):+.2f}%")
+                        print(f"      Avg return (Start → Trans2): {np.mean(returns_to_trans2):+.2f}%")
+                        print(f"      Avg return (Start → End):    {np.mean(returns_total):+.2f}%")
+                        print()
 
         return regime_data, results
 
