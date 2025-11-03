@@ -1,14 +1,12 @@
 import pandas as pd
 import numpy as np
 import warnings
-from typing import Union, Optional
+from typing import Union, Optional, Dict, List
+from tsfresh import extract_features
+from tsfresh.feature_extraction import MinimalFCParameters
 warnings.filterwarnings('ignore')
 
 class TimeSeriesDerivedFields:
-    """
-    Class to compute comprehensive derived fields from financial time series data
-    commonly used in academic financial modeling and research
-    """
     
     def __init__(self, price_data: pd.DataFrame):
         """
@@ -220,9 +218,175 @@ class TimeSeriesDerivedFields:
         
         return regime_data
     
-    def compute_all_derived_fields(self) -> pd.DataFrame:
+    def compute_tsfresh_features(self,
+                                  columns: Optional[List[str]] = None,
+                                  window_size: int = 20,
+                                  shift_periods: List[int] = [1]) -> pd.DataFrame:
+        """
+        Compute tsfresh statistical features using MinimalFCParameters.
+        
+        This method extracts time-series features from the price data using tsfresh's
+        minimal feature set, which includes statistical properties like mean, variance,
+        skewness, kurtosis, and other time series characteristics.
+        
+        Parameters:
+        -----------
+        columns : List[str], optional
+            List of column names to extract features from. If None, uses ['close', 'volume']
+            if available, otherwise just ['close']
+        window_size : int, default=20
+            Size of the rolling window for feature extraction
+        shift_periods : List[int], default=[1]
+            List of periods to shift/lag the features by (e.g., [1, 5, 10] for 1-day,
+            5-day, and 10-day lagged features)
+        
+        Returns:
+        --------
+        pd.DataFrame : DataFrame containing tsfresh-extracted features
+        
+        Notes:
+        ------
+        - Uses MinimalFCParameters() which includes ~20 basic statistical features
+        - Features are computed on rolling windows to maintain time-series structure
+        - Automatically handles missing values
+        - Column names will be prefixed with 'tsfresh_'
+        """
+        # Determine which columns to process
+        if columns is None:
+            columns = ['close']
+            # Only add volume if it exists AND has non-NaN values
+            if 'volume' in self.data.columns:
+                if not self.data['volume'].isna().all():
+                    columns.append('volume')
+                else:
+                    print("Volume column exists but contains only NaN values. Skipping volume features.")
+        else:
+            # Validate columns exist and have valid data
+            valid_columns = []
+            for col in columns:
+                if col not in self.data.columns:
+                    raise ValueError(f"Column '{col}' not found in data")
+                elif self.data[col].isna().all():
+                    print(f"Warning: Column '{col}' contains only NaN values. Skipping.")
+                else:
+                    valid_columns.append(col)
+            columns = valid_columns
+            
+            if len(columns) == 0:
+                raise ValueError("No valid columns with data available for feature extraction")
+        
+        print(f"Computing tsfresh features for columns: {columns}")
+        print(f"Window size: {window_size}, Shift periods: {shift_periods}")
+        
+        # Prepare data for tsfresh (requires specific format)
+        # tsfresh doesn't accept NaN values, so we need to handle them
+        tsfresh_data = []
+        valid_indices = []
+        
+        for idx in range(window_size, len(self.data)):
+            window_data = self.data.iloc[idx-window_size:idx]
+            
+            # Check if window has any NaN values for the columns we're processing
+            has_nan = False
+            for col in columns:
+                if window_data[col].isna().any():
+                    has_nan = True
+                    break
+            
+            # Only include windows without NaN values
+            if not has_nan:
+                valid_indices.append(idx)
+                for col in columns:
+                    for time_idx, value in enumerate(window_data[col].values):
+                        tsfresh_data.append({
+                            'id': idx,
+                            'time': time_idx,
+                            'value': value,
+                            'kind': col
+                        })
+        
+        if len(tsfresh_data) == 0:
+            raise ValueError(
+                f"No valid windows found without NaN values. "
+                f"Data may have too many NaN values for window_size={window_size}. "
+                f"Try using a smaller window_size or ensuring data has fewer NaN values."
+            )
+        
+        tsfresh_df = pd.DataFrame(tsfresh_data)
+        
+        print(f"Valid windows for feature extraction: {len(valid_indices)} out of {len(self.data) - window_size}")
+        
+        # Extract features using MinimalFCParameters
+        print("Extracting tsfresh features...")
+        extracted_features = extract_features(
+            tsfresh_df,
+            column_id='id',
+            column_sort='time',
+            column_kind='kind',
+            column_value='value',
+            default_fc_parameters=MinimalFCParameters(),
+            disable_progressbar=False,
+            n_jobs=1  # Set to 1 to avoid multiprocessing issues; can be increased
+        )
+        
+        # Align with original index using valid_indices
+        # Map the extracted features to their corresponding dates
+        feature_index = self.data.index[valid_indices]
+        extracted_features.index = feature_index
+        
+        # Handle duplicate indices if they exist
+        if extracted_features.index.has_duplicates:
+            print(f"Warning: Extracted features have {extracted_features.index.duplicated().sum()} duplicate indices. Aggregating...")
+            # Group by index and take the mean for duplicate indices
+            extracted_features = extracted_features.groupby(level=0).mean()
+        
+        # Reindex to match original data length (fill with NaN for periods without valid windows)
+        # Also handle duplicates in the target index
+        if self.data.index.has_duplicates:
+            print(f"Warning: Original data has {self.data.index.duplicated().sum()} duplicate indices. Using unique indices...")
+            # Get unique indices from original data
+            unique_index = self.data.index.unique()
+            aligned_features = extracted_features.reindex(unique_index)
+            # Then reindex again to match the full original index (with duplicates)
+            aligned_features = aligned_features.reindex(self.data.index, method='ffill')
+        else:
+            aligned_features = extracted_features.reindex(self.data.index)
+        
+        # Rename columns to add 'tsfresh_' prefix
+        aligned_features.columns = [f'tsfresh_{col}' for col in aligned_features.columns]
+        
+        # Create shifted versions if requested
+        all_features = [aligned_features]
+        
+        for shift in shift_periods:
+            if shift > 0:
+                shifted = aligned_features.shift(shift)
+                shifted.columns = [f'{col}_lag{shift}' for col in aligned_features.columns]
+                all_features.append(shifted)
+        
+        # Combine all features
+        final_features = pd.concat(all_features, axis=1)
+        
+        print(f"Generated {final_features.shape[1]} tsfresh features")
+        
+        return final_features
+    
+    def compute_all_derived_fields(self, include_tsfresh: bool = False,
+                                     tsfresh_params: Optional[Dict] = None) -> pd.DataFrame:
         """
         Compute all derived fields and return combined DataFrame
+        
+        Parameters:
+        -----------
+        include_tsfresh : bool, default=False
+            Whether to include tsfresh statistical features
+        tsfresh_params : Dict, optional
+            Parameters to pass to compute_tsfresh_features().
+            Defaults to {'window_size': 20, 'shift_periods': [1]}
+        
+        Returns:
+        --------
+        pd.DataFrame : Combined dataframe with all features
         """
         all_fields = [self.data]
         
@@ -243,6 +407,13 @@ class TimeSeriesDerivedFields:
         
         # print("Computing regime variables...")
         all_fields.append(self.compute_regime_variables())
+        
+        # Optionally compute tsfresh features
+        if include_tsfresh:
+            # print("Computing tsfresh features...")
+            if tsfresh_params is None:
+                tsfresh_params = {'window_size': 20, 'shift_periods': [1]}
+            all_fields.append(self.compute_tsfresh_features(**tsfresh_params))
         
         # Combine all DataFrames
         combined_data = pd.concat(all_fields, axis=1)
