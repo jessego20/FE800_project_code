@@ -36,24 +36,15 @@ class TimeSeriesDerivedFields:
     
     def compute_returns(self) -> pd.DataFrame:
         """
-        Compute various return measures
+        Compute various return measures using log returns only
         """
         returns_data = pd.DataFrame(index=self.data.index)
         
-        # Simple returns
-        returns_data['ret'] = self.data['close'].pct_change()
-        
-        # Log returns
+        # Log returns (single period)
         returns_data['log_ret'] = np.log(self.data['close'] / self.data['close'].shift(1))
         
-        # Overnight returns (if open price available)
-        if 'open' in self.data.columns:
-            returns_data['overnight_ret'] = (self.data['open'] / self.data['close'].shift(1)) - 1
-            returns_data['intraday_ret'] = (self.data['close'] / self.data['open']) - 1
-        
-        # Multi-period returns
+        # Multi-period log returns
         for period in [5, 10, 20, 60, 120, 252]:
-            returns_data[f'ret_{period}d'] = self.data['close'].pct_change(period)
             returns_data[f'log_ret_{period}d'] = np.log(
                 self.data['close'] / self.data['close'].shift(period)
             )
@@ -66,20 +57,18 @@ class TimeSeriesDerivedFields:
         """
         vol_data = pd.DataFrame(index=self.data.index)
         
-        # Get returns first
-        returns = self.data['close'].pct_change()
+        # Get log returns only
         log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
         
-        # Standard volatility (annualized)
+        # Standard volatility (annualized) - using log returns
         for window in window_sizes:
-            vol_data[f'vol_{window}d'] = returns.rolling(window).std() * np.sqrt(252)
-            vol_data[f'log_vol_{window}d'] = log_returns.rolling(window).std() * np.sqrt(252)
+            vol_data[f'vol_{window}d'] = log_returns.rolling(window).std() * np.sqrt(252)
         
         # Parkinson volatility (uses high/low)
         if all(col in self.data.columns for col in ['high', 'low']):
             for window in window_sizes:
                 parkinson_vol = np.sqrt(
-                    (1 / (4 * np.log(2))) * 
+                    (1 / (4 * np.log(2))) *
                     (np.log(self.data['high'] / self.data['low']) ** 2).rolling(window).mean() * 252
                 )
                 vol_data[f'parkinson_vol_{window}d'] = parkinson_vol
@@ -98,26 +87,26 @@ class TimeSeriesDerivedFields:
     
     def compute_momentum(self, window_sizes: list = [10, 20, 60, 120, 252]) -> pd.DataFrame:
         """
-        Compute momentum indicators
+        Compute momentum indicators using log returns
         """
         momentum_data = pd.DataFrame(index=self.data.index)
         
-        # Price momentum (past returns)
+        # Price momentum (log returns)
         for window in window_sizes:
-            momentum_data[f'momentum_{window}d'] = (
-                self.data['close'] / self.data['close'].shift(window) - 1
+            momentum_data[f'momentum_{window}d'] = np.log(
+                self.data['close'] / self.data['close'].shift(window)
             )
         
-        # Moving average ratios
+        # EMA ratios (price/EMA)
         for window in window_sizes:
-            ma = self.data['close'].rolling(window).mean()
-            momentum_data[f'ma_ratio_{window}d'] = self.data['close'] / ma
+            ema = self.data['close'].ewm(span=window).mean()
+            momentum_data[f'ema_ratio_{window}d'] = self.data['close'] / ema
         
-        # RSI (Relative Strength Index)
+        # RSI (Relative Strength Index) - using log returns
+        log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
         for window in [14, 30]:
-            delta = self.data['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+            gain = (log_returns.where(log_returns > 0, 0)).rolling(window=window).mean()
+            loss = (-log_returns.where(log_returns < 0, 0)).rolling(window=window).mean()
             rs = gain / loss
             momentum_data[f'rsi_{window}d'] = 100 - (100 / (1 + rs))
         
@@ -129,17 +118,16 @@ class TimeSeriesDerivedFields:
         """
         tech_data = pd.DataFrame(index=self.data.index)
         
-        # Moving averages
+        # EMA moving averages
         for window in [5, 10, 20, 50, 100, 200]:
-            tech_data[f'sma_{window}'] = self.data['close'].rolling(window).mean()
             tech_data[f'ema_{window}'] = self.data['close'].ewm(span=window).mean()
         
-        # Bollinger Bands (20-day, 2 standard deviations)
-        sma_20 = self.data['close'].rolling(20).mean()
+        # Bollinger Bands (20-day, 2 standard deviations) using EMA
+        ema_20 = self.data['close'].ewm(span=20).mean()
         std_20 = self.data['close'].rolling(20).std()
-        tech_data['bb_upper'] = sma_20 + (2 * std_20)
-        tech_data['bb_lower'] = sma_20 - (2 * std_20)
-        tech_data['bb_width'] = (tech_data['bb_upper'] - tech_data['bb_lower']) / sma_20
+        tech_data['bb_upper'] = ema_20 + (2 * std_20)
+        tech_data['bb_lower'] = ema_20 - (2 * std_20)
+        tech_data['bb_width'] = (tech_data['bb_upper'] - tech_data['bb_lower']) / ema_20
         tech_data['bb_position'] = (self.data['close'] - tech_data['bb_lower']) / (
             tech_data['bb_upper'] - tech_data['bb_lower']
         )
@@ -182,14 +170,14 @@ class TimeSeriesDerivedFields:
             micro_data['volume_ratio'] = self.data['volume'] / micro_data['volume_ma_20']
             
             # Price-Volume indicators
-            returns = self.data['close'].pct_change()
             micro_data['volume_weighted_price'] = (
-                (self.data['volume'] * self.data['close']).rolling(20).sum() / 
+                (self.data['volume'] * self.data['close']).rolling(20).sum() /
                 self.data['volume'].rolling(20).sum()
             )
             
-            # On-Balance Volume
-            obv = (returns.apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0) * 
+            # On-Balance Volume - using log returns
+            log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
+            obv = (log_returns.apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0) *
                    self.data['volume']).cumsum()
             micro_data['obv'] = obv
         
@@ -197,21 +185,21 @@ class TimeSeriesDerivedFields:
     
     def compute_regime_variables(self, window_sizes: list = [20, 60, 120]) -> pd.DataFrame:
         """
-        Compute variables for regime identification
+        Compute variables for regime identification using log returns
         """
         regime_data = pd.DataFrame(index=self.data.index)
         
-        returns = self.data['close'].pct_change()
+        log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
         
         # Rolling statistics
         for window in window_sizes:
-            regime_data[f'skew_{window}d'] = returns.rolling(window).skew()
-            regime_data[f'kurt_{window}d'] = returns.rolling(window).kurt()
-            regime_data[f'var_95_{window}d'] = returns.rolling(window).quantile(0.05)
-            regime_data[f'var_99_{window}d'] = returns.rolling(window).quantile(0.01)
+            regime_data[f'skew_{window}d'] = log_returns.rolling(window).skew()
+            regime_data[f'kurt_{window}d'] = log_returns.rolling(window).kurt()
+            regime_data[f'var_95_{window}d'] = log_returns.rolling(window).quantile(0.05)
+            regime_data[f'var_99_{window}d'] = log_returns.rolling(window).quantile(0.01)
         
-        # Drawdown measures
-        cumulative_returns = (1 + returns).cumprod()
+        # Drawdown measures - using log returns
+        cumulative_returns = np.exp(log_returns.expanding().sum())
         running_max = cumulative_returns.expanding().max()
         regime_data['drawdown'] = (cumulative_returns - running_max) / running_max
         regime_data['max_drawdown_1y'] = regime_data['drawdown'].rolling(252).min()
