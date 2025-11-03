@@ -302,7 +302,7 @@ class KMRF:
         y: pd.Series,
         max_iter: int = 100,
         percentile: int = 100,
-        pvalue: float = 0.05,
+        pvalue: float = 0.01,
         verbose: int = 2
     ) -> List[str]:
         """
@@ -334,8 +334,6 @@ class KMRF:
         -----
         This uses the standard Boruta algorithm with permutation-based importance
         from Random Forest, which is more stable than SHAP-based importance.
-        
-        TODO: Implement PGTS (Purged Group Time-Series Split) cross-validation
         """
         if BorutaPy is None:
             raise ImportError("boruta package not installed. Install with: pip install boruta")
@@ -363,7 +361,7 @@ class KMRF:
         
         # Create Random Forest estimator
         rf = RandomForestClassifier(
-            n_estimators=100,
+            n_estimators=200,
             max_depth=5,
             random_state=self.random_seed,
             n_jobs=-1
