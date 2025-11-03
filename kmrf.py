@@ -24,10 +24,10 @@ import derive_data as dd
 
 # Import for feature selection
 try:
-    from BorutaShap import BorutaShap
+    from boruta import BorutaPy
 except ImportError:
-    BorutaShap = None
-    warnings.warn("BorutaShap not installed. Feature selection will be skipped.")
+    BorutaPy = None
+    warnings.warn("boruta not installed. Feature selection will be skipped. Install with: pip install boruta")
 
 warnings.filterwarnings('ignore')
 
@@ -42,7 +42,7 @@ class KMRF:
     - Computing/loading technical features
     - Loading KAMA+MSR regime labels from saved models
     - Adapting 4-regime labels to 3-class KMRF labels
-    - Feature selection using BorutaShap
+    - Feature selection using Boruta algorithm
     - Random Forest training for regime prediction
     - Performance evaluation
     
@@ -54,18 +54,53 @@ class KMRF:
     
     def __init__(
         self,
+        asset_name: str,
         asset_class: str = 'us_equity',
         data_path: Optional[Union[str, Path]] = None,
         kama_msr_model_dir: Optional[Union[str, Path]] = None,
         end_date: str = '20190101',
         use_ready_data: bool = True,
+        validation_start: str = '2019-04-01',
+        validation_end: str = '2019-09-30',
+        test_start: str = '2020-01-01',
         random_seed: int = 42
     ):
-        """Initialize the KMRF model."""
+        """
+        Initialize the KMRF model for a specific asset.
+        
+        Parameters
+        ----------
+        asset_name : str
+            Name of the specific asset (e.g., 'SPDR S&P 500 ETF')
+        asset_class : str, default='us_equity'
+            Asset class category ('us_equity', 'commodity', 'int_equity')
+        data_path : str or Path, optional
+            Path to the data file
+        kama_msr_model_dir : str or Path, optional
+            Path to the KAMA+MSR model directory
+        end_date : str, default='20190101'
+            End date for KAMA+MSR model selection
+        use_ready_data : bool, default=True
+            Whether to use pre-computed features from 'ready' folder
+        validation_start : str, default='2019-04-01'
+            Start date for validation period
+        validation_end : str, default='2019-09-30'
+            End date for validation period
+        test_start : str, default='2020-01-01'
+            Start date for test period (extends to end of available data)
+        random_seed : int, default=42
+            Random seed for reproducibility
+        """
+        self.asset_name = asset_name
         self.asset_class = asset_class
         self.end_date = end_date
         self.random_seed = random_seed
         self.use_ready_data = use_ready_data
+        
+        # Data split dates
+        self.validation_start = pd.to_datetime(validation_start)
+        self.validation_end = pd.to_datetime(validation_end)
+        self.test_start = pd.to_datetime(test_start)
         
         # Set random seed
         np.random.seed(self.random_seed)
@@ -96,11 +131,19 @@ class KMRF:
         # Initialize data containers
         self.raw_data: Optional[pd.DataFrame] = None
         self.features: Optional[pd.DataFrame] = None
-        self.labels: Optional[pd.DataFrame] = None
+        self.labels: Optional[pd.Series] = None  # Original KAMA+MSR 4-regime labels
+        self.adapted_labels: Optional[pd.Series] = None  # Adapted 3-class KMRF labels
         self.macro_data: Optional[pd.DataFrame] = None
-        self.asset_names: List[str] = []
-        self.kama_msr_models: Dict = {}
+        self.kama_msr_model: Optional[object] = None
         self.selected_features: Optional[List[str]] = None
+        
+        # Data splits
+        self.X_train: Optional[pd.DataFrame] = None
+        self.y_train: Optional[pd.Series] = None
+        self.X_val: Optional[pd.DataFrame] = None
+        self.y_val: Optional[pd.Series] = None  # None for val/test (no labels available)
+        self.X_test: Optional[pd.DataFrame] = None
+        self.y_test: Optional[pd.Series] = None  # None for val/test (no labels available)
         
         # Model components
         self.feature_selector = None
@@ -109,134 +152,114 @@ class KMRF:
         self.performance_metrics: Dict = {}
         
         print(f"KMRF model initialized")
+        print(f"  Asset: {self.asset_name}")
         print(f"  Asset class: {self.asset_class}")
         print(f"  End date: {self.end_date}")
         print(f"  Using pre-computed features: {self.use_ready_data}")
         print(f"  Data path: {self.data_path}")
         print(f"  KAMA+MSR model directory: {self.kama_msr_model_dir}")
+        print(f"  Validation period: {validation_start} to {validation_end}")
+        print(f"  Test start: {test_start}")
         print(f"  Random seed: {self.random_seed}")
     
     def load_data(self, rename_map: Optional[Dict] = None) -> pd.DataFrame:
-        """Load multi-asset data from CSV file."""
+        """Load data for the specific asset."""
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {self.data_path}")
         
         print(f"\nLoading data from: {self.data_path}")
         
-        self.raw_data = pd.read_csv(
+        # Load full dataset
+        full_data = pd.read_csv(
             self.data_path,
             index_col=0,
             header=[0, 1],
             parse_dates=True
         )
-        
-        self.raw_data.index = pd.to_datetime(self.raw_data.index)
+        full_data.index = pd.to_datetime(full_data.index)
         
         if rename_map:
-            self.raw_data.rename(columns=rename_map, level=0, inplace=True)
+            full_data.rename(columns=rename_map, level=0, inplace=True)
         
-        self.asset_names = self.raw_data.columns.get_level_values(0).unique().tolist()
+        # Extract only this asset's data
+        available_assets = full_data.columns.get_level_values(0).unique().tolist()
         
-        print(f"Loaded {self.raw_data.shape[0]} rows, {len(self.asset_names)} assets")
-        print(f"Date range: {self.raw_data.index[0]} to {self.raw_data.index[-1]}")
-        print(f"Assets: {', '.join(self.asset_names[:5])}{'...' if len(self.asset_names) > 5 else ''}")
+        if self.asset_name not in available_assets:
+            raise ValueError(
+                f"Asset '{self.asset_name}' not found in data. "
+                f"Available assets: {', '.join(available_assets[:10])}..."
+            )
+        
+        self.raw_data = full_data.xs(self.asset_name, level=0, axis=1)
+        
+        print(f"Loaded data for: {self.asset_name}")
+        print(f"  Rows: {self.raw_data.shape[0]}")
+        print(f"  Columns: {self.raw_data.shape[1]}")
+        print(f"  Date range: {self.raw_data.index[0]} to {self.raw_data.index[-1]}")
         
         return self.raw_data
     
-    def get_features(self, assets: Optional[List[str]] = None) -> pd.DataFrame:
-        """Get features for specified assets."""
+    def get_features(self) -> pd.DataFrame:
+        """Get features for the asset."""
         if self.raw_data is None:
             raise ValueError("No data loaded. Call load_data() first.")
         
         if self.use_ready_data:
-            print(f"\nExtracting pre-computed features...")
-            
-            if assets is None:
-                self.features = self.raw_data
-            else:
-                asset_columns = []
-                for asset in assets:
-                    if asset in self.asset_names:
-                        asset_cols = [col for col in self.raw_data.columns if col[0] == asset]
-                        asset_columns.extend(asset_cols)
-                
-                if not asset_columns:
-                    raise ValueError(f"No matching assets found: {assets}")
-                
-                self.features = self.raw_data[asset_columns]
-            
-            print(f"Features shape: {self.features.shape}")
-            print(f"Assets: {len(self.features.columns.get_level_values(0).unique())}")
+            print(f"\nExtracting pre-computed features for {self.asset_name}...")
+            self.features = self.raw_data.copy()
+            print(f"  Features shape: {self.features.shape}")
         else:
             raise NotImplementedError("Feature computation from raw data not yet implemented.")
         
         return self.features
     
-    def load_kama_msr_labels(self, assets: Optional[List[str]] = None) -> pd.DataFrame:
-        """Load KAMA+MSR regime labels from saved models."""
+    def load_kama_msr_labels(self) -> pd.Series:
+        """Load KAMA+MSR regime labels from saved model for this asset."""
         if not self.kama_msr_model_dir.exists():
             raise FileNotFoundError(f"KAMA+MSR model directory not found: {self.kama_msr_model_dir}")
         
-        if assets is None:
-            assets = self.asset_names
-        
         print(f"\n{'='*80}")
-        print(f"LOADING KAMA+MSR LABELS FOR {len(assets)} ASSETS")
+        print(f"LOADING KAMA+MSR LABELS FOR {self.asset_name}")
         print(f"{'='*80}")
         print(f"Model directory: {self.kama_msr_model_dir}")
         
-        labels_list = []
-        loaded_count = 0
+        # Try to find model file
+        model_pattern = f"{self.asset_name}_KAMA-MSR_4-regimes.pkl"
+        model_files = list(self.kama_msr_model_dir.glob(model_pattern))
         
-        for i, asset in enumerate(assets):
-            model_pattern = f"{asset}_KAMA-MSR_4-regimes.pkl"
+        if not model_files:
+            asset_safe = self.asset_name.replace(' ', '_')
+            model_pattern = f"{asset_safe}_KAMA-MSR_4-regimes.pkl"
             model_files = list(self.kama_msr_model_dir.glob(model_pattern))
-            
-            if not model_files:
-                asset_safe = asset.replace(' ', '_')
-                model_pattern = f"{asset_safe}_KAMA-MSR_4-regimes.pkl"
-                model_files = list(self.kama_msr_model_dir.glob(model_pattern))
-            
-            if not model_files:
-                print(f"[{i+1}/{len(assets)}] ✗ Model not found for: {asset}")
-                continue
-            
-            model_file = model_files[0]
-            
-            try:
-                with open(model_file, 'rb') as f:
-                    kama_msr_model = pickle.load(f)
-                
-                self.kama_msr_models[asset] = kama_msr_model
-                
-                if hasattr(kama_msr_model, 'regime_labels'):
-                    regime_labels = kama_msr_model.regime_labels.copy()
-                else:
-                    print(f"[{i+1}/{len(assets)}] ✗ No regime_labels attribute for: {asset}")
-                    continue
-                
-                asset_labels = pd.DataFrame({'regime_label': regime_labels})
-                asset_labels.columns = pd.MultiIndex.from_product([[asset], asset_labels.columns])
-                
-                labels_list.append(asset_labels)
-                loaded_count += 1
-                
-                print(f"[{i+1}/{len(assets)}] ✓ Loaded labels for: {asset}")
-                
-            except Exception as e:
-                print(f"[{i+1}/{len(assets)}] ✗ Error loading {asset}: {str(e)}")
-                continue
         
-        if not labels_list:
-            raise ValueError("No labels loaded successfully")
+        if not model_files:
+            raise FileNotFoundError(f"Model not found for: {self.asset_name}")
         
-        self.labels = pd.concat(labels_list, axis=1)
+        model_file = model_files[0]
         
-        print(f"\n{'='*80}")
-        print(f"LABEL LOADING COMPLETE")
+        print(f"Loading from: {model_file.name}")
+        
+        with open(model_file, 'rb') as f:
+            self.kama_msr_model = pickle.load(f)
+        
+        if not hasattr(self.kama_msr_model, 'regime_labels'):
+            raise ValueError(f"No regime_labels attribute in model for: {self.asset_name}")
+        
+        self.labels = self.kama_msr_model.regime_labels.copy()
+        
+        print(f"✓ Loaded labels for: {self.asset_name}")
+        print(f"  Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
+        print(f"  Total periods: {len(self.labels)}")
+        
+        # Print distribution
+        print(f"\n  Original 4-regime distribution:")
+        regime_names = {0: 'LV Bullish', 1: 'LV Bearish', 2: 'HV Bullish', 3: 'HV Bearish'}
+        for regime in [0, 1, 2, 3]:
+            count = (self.labels == regime).sum()
+            pct = (count / len(self.labels.dropna())) * 100
+            print(f"    {regime} - {regime_names[regime]:>12}: {count:>5} ({pct:>5.1f}%)")
+        
         print(f"{'='*80}")
-        print(f"Successfully loaded: {loaded_count}/{len(assets)} assets")
-        print(f"Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
         
         return self.labels
     
@@ -276,20 +299,16 @@ class KMRF:
     def select_features_boruta(
         self,
         X: pd.DataFrame,
-        y: pd.DataFrame,
-        n_trials: int = 100,
-        sample: bool = False,
-        train_or_test: str = 'test',
-        importance_measure: str = 'shap',
-        classification: bool = True,
+        y: pd.Series,
+        max_iter: int = 100,
         percentile: int = 100,
         pvalue: float = 0.05,
-        verbose: int = 0
+        verbose: int = 2
     ) -> List[str]:
         """
-        Perform feature selection using BorutaShap algorithm.
+        Perform feature selection using Boruta algorithm.
         
-        This implements BorutaShap adapted for time-series data to avoid data leakage.
+        This implements standard Boruta adapted for time-series data to avoid data leakage.
         
         Parameters
         ----------
@@ -297,8 +316,14 @@ class KMRF:
             Feature matrix (multi-index format)
         y : pd.DataFrame
             Target labels (multi-index format)
-        n_trials : int, default=100
-            Number of BorutaShap trials
+        max_iter : int, default=100
+            Number of Boruta iterations (replaces n_trials from BorutaShap)
+        percentile : int, default=100
+            Percentile for feature importance threshold
+        pvalue : float, default=0.05
+            P-value for feature selection significance
+        verbose : int, default=2
+            Verbosity level (0=silent, 1=minimal, 2=full)
         
         Returns
         -------
@@ -307,254 +332,214 @@ class KMRF:
             
         Notes
         -----
+        This uses the standard Boruta algorithm with permutation-based importance
+        from Random Forest, which is more stable than SHAP-based importance.
+        
         TODO: Implement PGTS (Purged Group Time-Series Split) cross-validation
         """
-        if BorutaShap is None:
-            raise ImportError("BorutaShap not installed. Install with: pip install BorutaShap")
+        if BorutaPy is None:
+            raise ImportError("boruta package not installed. Install with: pip install boruta")
         
         print(f"\n{'='*80}")
         print(f"BORUTA FEATURE SELECTION")
         print(f"{'='*80}")
         print(f"Initial features: {X.shape[1]}")
-        print(f"Running BorutaShap with {n_trials} trials...")
+        print(f"Running Boruta with max_iter={max_iter}...")
         print("WARNING: Time-series cross-validation (PGTS) not yet implemented")
         print("         Feature selection may have data leakage risk")
         
-        # Flatten multi-index for BorutaShap
-        X_flat = X.copy()
-        X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
-                          for col in X.columns]
-        
-        # For labels, take first asset's labels
-        y_flat = y.iloc[:, 0] if len(y.shape) > 1 else y
+        # Prepare data for Boruta
+        X_clean = X.copy()
+        y_clean = y.copy()
         
         # Remove NaN values
-        valid_idx = ~(X_flat.isna().any(axis=1) | y_flat.isna())
-        X_clean = X_flat[valid_idx]
-        y_clean = y_flat[valid_idx]
+        valid_idx = ~(X_clean.isna().any(axis=1) | y_clean.isna())
+        X_clean = X_clean[valid_idx]
+        y_clean = y_clean[valid_idx]
         
         print(f"Clean samples: {len(X_clean)}")
         
         from sklearn.ensemble import RandomForestClassifier
         
-        model = RandomForestClassifier(
+        # Create Random Forest estimator
+        rf = RandomForestClassifier(
             n_estimators=100,
             max_depth=5,
+            random_state=self.random_seed,
+            n_jobs=-1
+        )
+        
+        # Initialize Boruta
+        selector = BorutaPy(
+            estimator=rf,
+            n_estimators='auto',
+            max_iter=max_iter,
+            perc=percentile,
+            alpha=pvalue,
+            verbose=verbose,
             random_state=self.random_seed
         )
         
-        Feature_Selector = BorutaShap(
-            model=model,
-            importance_measure=importance_measure,
-            classification=classification,
-            percentile=percentile,
-            pvalue=pvalue
-        )
+        print("Fitting Boruta...")
+        # Fit Boruta (standard API: fit(X, y))
+        selector.fit(X_clean.values, y_clean.values)
         
-        print("Fitting BorutaShap...")
-        Feature_Selector.fit(
-            X=X_clean.values,
-            y=y_clean.values,
-            n_trials=n_trials,
-            sample=sample,
-            train_or_test=train_or_test,
-            verbose=verbose
-        )
-        
-        # Get selected features
-        selected_features_bool = Feature_Selector.Subset().values
-        selected_feature_names = X_clean.columns[selected_features_bool].tolist()
-        
-        # Map back to original multi-index column names
-        selected_original_names = []
-        for flat_name in selected_feature_names:
-            for orig_col in X.columns:
-                col_str = '_'.join(map(str, orig_col)) if isinstance(orig_col, tuple) else str(orig_col)
-                if col_str == flat_name:
-                    selected_original_names.append(orig_col)
-                    break
-        
-        self.selected_features = selected_original_names
+        # Get selected features using support_ attribute
+        self.selected_features = X_clean.columns[selector.support_].tolist()
+        self.feature_selector = selector
         
         print(f"\n{'='*80}")
         print(f"FEATURE SELECTION COMPLETE")
         print(f"{'='*80}")
         print(f"Selected features: {len(self.selected_features)}")
+        print(f"Tentative features: {selector.support_weak_.sum()}")
+        print(f"Rejected features: {(~selector.support_).sum()}")
         print(f"Reduction: {100 * (1 - len(self.selected_features) / X.shape[1]):.1f}%")
         
         return self.selected_features
     
     def adapt_regime_labels(
         self,
-        price_data: Optional[pd.DataFrame] = None,
-        labels: Optional[pd.DataFrame] = None
-    ) -> pd.DataFrame:
+        price_data: Optional[pd.Series] = None,
+        labels: Optional[pd.Series] = None
+    ) -> pd.Series:
         """
-        Adapt 4-regime KAMA+MSR labels to 3-class KMRF labels.
+        Adapt 4-regime KAMA+MSR labels to 3-class KMRF labels for this asset.
         
         Implements the label transformation from the paper:
         1. Bullish (1): LV bullish + extension to peak of next HV bullish
         2. Bearish (-1): HV bearish + extension to trough of next LV bearish
         3. Other (0): Remaining periods (including post-peak HV bullish and post-trough LV bearish)
         """
-        if price_data is None:
-            if self.raw_data is None:
-                raise ValueError("No price data available. Load data first.")
-            price_data = self.raw_data
-        
         if labels is None:
             if self.labels is None:
                 raise ValueError("No labels available. Load KAMA+MSR labels first.")
             labels = self.labels
         
+        if price_data is None:
+            if self.raw_data is None:
+                raise ValueError("No price data available. Load data first.")
+            # Get close price from raw data
+            if 'close' in self.raw_data.columns:
+                price_data = self.raw_data['close']
+            else:
+                numeric_cols = self.raw_data.select_dtypes(include=[np.number]).columns
+                price_data = self.raw_data[numeric_cols[0]] if len(numeric_cols) > 0 else None
+        
         print(f"\n{'='*80}")
-        print(f"ADAPTING REGIME LABELS")
+        print(f"ADAPTING REGIME LABELS FOR {self.asset_name}")
         print(f"{'='*80}")
         
-        asset_names = labels.columns.get_level_values(0).unique()
-        adapted_labels_list = []
+        # Initialize as Other (0)
+        adapted = pd.Series(0, index=labels.index, dtype=int)
         
-        for asset in asset_names:
-            print(f"\nProcessing: {asset}")
+        # Process regimes
+        i = 0
+        while i < len(labels):
+            current_regime = labels.iloc[i]
             
-            try:
-                asset_labels = labels.xs(asset, level=0, axis=1)['regime_label'].copy()
+            if pd.isna(current_regime):
+                i += 1
+                continue
+            
+            current_regime = int(current_regime)
+            
+            # Find regime end
+            j = i + 1
+            while j < len(labels) and labels.iloc[j] == current_regime:
+                j += 1
+            
+            regime_start = i
+            regime_end = j
+            
+            # LV Bullish (0) → Extend to peak of HV Bullish (2)
+            if current_regime == 0:
+                extension_end = regime_end
                 
-                # Get close price
-                try:
-                    asset_prices = price_data.xs(asset, level=0, axis=1)
-                    if 'close' in asset_prices.columns:
-                        asset_close = asset_prices['close']
-                    else:
-                        numeric_cols = asset_prices.select_dtypes(include=[np.number]).columns
-                        asset_close = asset_prices[numeric_cols[0]] if len(numeric_cols) > 0 else None
-                except:
-                    asset_close = None
-                
-                # Initialize as Other (0)
-                adapted = pd.Series(0, index=asset_labels.index, dtype=int)
-                
-                # Process regimes
-                i = 0
-                while i < len(asset_labels):
-                    current_regime = asset_labels.iloc[i]
-                    
-                    if pd.isna(current_regime):
-                        i += 1
+                k = regime_end
+                while k < len(labels):
+                    next_regime = labels.iloc[k]
+                    if pd.isna(next_regime):
+                        k += 1
                         continue
                     
-                    current_regime = int(current_regime)
+                    next_regime = int(next_regime)
                     
-                    # Find regime end
-                    j = i + 1
-                    while j < len(asset_labels) and asset_labels.iloc[j] == current_regime:
-                        j += 1
-                    
-                    regime_start = i
-                    regime_end = j
-                    
-                    # LV Bullish (0) → Extend to peak of HV Bullish (2)
-                    if current_regime == 0:
-                        extension_end = regime_end
-                        
-                        k = regime_end
-                        while k < len(asset_labels):
-                            next_regime = asset_labels.iloc[k]
-                            if pd.isna(next_regime):
-                                k += 1
-                                continue
-                            
-                            next_regime = int(next_regime)
-                            
-                            if next_regime == 2:  # HV Bullish
-                                hv_start = k
-                                while k < len(asset_labels) and int(asset_labels.iloc[k]) == 2:
-                                    k += 1
-                                hv_end = k
-                                
-                                if asset_close is not None:
-                                    hv_indices = asset_labels.index[hv_start:hv_end]
-                                    hv_prices = asset_close.loc[hv_indices]
-                                    if len(hv_prices) > 0:
-                                        peak_idx = hv_prices.idxmax()
-                                        peak_pos = asset_labels.index.get_loc(peak_idx)
-                                        extension_end = peak_pos + 1
-                                        
-                                        # Mark remaining HV Bullish after peak as Other
-                                        adapted.iloc[extension_end:hv_end] = 0
-                                break
+                    if next_regime == 2:  # HV Bullish
+                        hv_start = k
+                        while k < len(labels) and int(labels.iloc[k]) == 2:
                             k += 1
+                        hv_end = k
                         
-                        # Mark as Bullish up to extension
-                        adapted.iloc[regime_start:extension_end] = 1
-                    
-                    # HV Bearish (3) → Extend to trough of LV Bearish (1)
-                    elif current_regime == 3:
-                        extension_end = regime_end
-                        
-                        k = regime_end
-                        while k < len(asset_labels):
-                            next_regime = asset_labels.iloc[k]
-                            if pd.isna(next_regime):
-                                k += 1
-                                continue
-                            
-                            next_regime = int(next_regime)
-                            
-                            if next_regime == 1:  # LV Bearish
-                                lv_start = k
-                                while k < len(asset_labels) and int(asset_labels.iloc[k]) == 1:
-                                    k += 1
-                                lv_end = k
+                        if price_data is not None:
+                            hv_indices = labels.index[hv_start:hv_end]
+                            hv_prices = price_data.loc[hv_indices]
+                            if len(hv_prices) > 0:
+                                peak_idx = hv_prices.idxmax()
+                                peak_pos = labels.index.get_loc(peak_idx)
+                                extension_end = peak_pos + 1
                                 
-                                if asset_close is not None:
-                                    lv_indices = asset_labels.index[lv_start:lv_end]
-                                    lv_prices = asset_close.loc[lv_indices]
-                                    if len(lv_prices) > 0:
-                                        trough_idx = lv_prices.idxmin()
-                                        trough_pos = asset_labels.index.get_loc(trough_idx)
-                                        extension_end = trough_pos + 1
-                                        
-                                        # Mark remaining LV Bearish after trough as Other
-                                        adapted.iloc[extension_end:lv_end] = 0
-                                break
-                            k += 1
-                        
-                        # Mark as Bearish up to extension
-                        adapted.iloc[regime_start:extension_end] = -1
+                                # Mark remaining HV Bullish after peak as Other
+                                adapted.iloc[extension_end:hv_end] = 0
+                        break
+                    k += 1
+                
+                # Mark as Bullish up to extension
+                adapted.iloc[regime_start:extension_end] = 1
+            
+            # HV Bearish (3) → Extend to trough of LV Bearish (1)
+            elif current_regime == 3:
+                extension_end = regime_end
+                
+                k = regime_end
+                while k < len(labels):
+                    next_regime = labels.iloc[k]
+                    if pd.isna(next_regime):
+                        k += 1
+                        continue
                     
-                    i = regime_end
+                    next_regime = int(next_regime)
+                    
+                    if next_regime == 1:  # LV Bearish
+                        lv_start = k
+                        while k < len(labels) and int(labels.iloc[k]) == 1:
+                            k += 1
+                        lv_end = k
+                        
+                        if price_data is not None:
+                            lv_indices = labels.index[lv_start:lv_end]
+                            lv_prices = price_data.loc[lv_indices]
+                            if len(lv_prices) > 0:
+                                trough_idx = lv_prices.idxmin()
+                                trough_pos = labels.index.get_loc(trough_idx)
+                                extension_end = trough_pos + 1
+                                
+                                # Mark remaining LV Bearish after trough as Other
+                                adapted.iloc[extension_end:lv_end] = 0
+                        break
+                    k += 1
                 
-                # Create DataFrame
-                asset_adapted = pd.DataFrame({'adapted_regime': adapted})
-                asset_adapted.columns = pd.MultiIndex.from_product([[asset], asset_adapted.columns])
-                
-                adapted_labels_list.append(asset_adapted)
-                
-                # Print distribution
-                dist = adapted.value_counts().sort_index()
-                print(f"  Label distribution:")
-                label_map = {-1: 'Bearish', 0: 'Other', 1: 'Bullish'}
-                for label_val, count in dist.items():
-                    pct = (count / len(adapted)) * 100
-                    print(f"    {label_map[label_val]:>8} ({label_val:>2}): {count:>5} ({pct:>5.1f}%)")
-                
-            except Exception as e:
-                print(f"  ✗ Error processing {asset}: {str(e)}")
-                continue
+                # Mark as Bearish up to extension
+                adapted.iloc[regime_start:extension_end] = -1
+            
+            i = regime_end
         
-        if not adapted_labels_list:
-            raise ValueError("No labels adapted successfully")
+        # Print distribution
+        print(f"\n  Adapted 3-class distribution:")
+        label_map = {-1: 'Bearish', 0: 'Other', 1: 'Bullish'}
+        dist = adapted.value_counts().sort_index()
+        for label_val in [1, 0, -1]:
+            if label_val in dist:
+                count = dist[label_val]
+                pct = (count / len(adapted)) * 100
+                print(f"    {label_map[label_val]:>8} ({label_val:>2}): {count:>5} ({pct:>5.1f}%)")
         
-        adapted_labels = pd.concat(adapted_labels_list, axis=1)
-        
-        print(f"\n{'='*80}")
-        print(f"LABEL ADAPTATION COMPLETE")
         print(f"{'='*80}")
-        print(f"Adapted {len(asset_names)} assets")
-        print(f"Label shape: {adapted_labels.shape}")
         
-        return adapted_labels
+        # Store adapted labels in member variable
+        self.adapted_labels = adapted
+        
+        return adapted
     
     def prepare_training_data(
         self,
@@ -562,8 +547,8 @@ class KMRF:
         include_macro: bool = True,
         select_features: bool = False,
         boruta_params: Optional[Dict] = None,
-        align_indices: bool = True
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        split_data: bool = True
+    ) -> Tuple[pd.DataFrame, pd.Series]:
         """
         Prepare features and labels for model training.
         
@@ -571,8 +556,8 @@ class KMRF:
         1. Optionally loads and combines macroeconomic data
         2. Transforms 4-regime KAMA+MSR labels to 3-class KMRF labels
         3. Aligns feature and label indices
-        4. Optionally applies BorutaShap feature selection
-        5. Removes rows with missing values
+        4. Optionally applies Boruta feature selection (on training data only)
+        5. Optionally splits data into train/validation/test sets
         
         Parameters
         ----------
@@ -581,27 +566,24 @@ class KMRF:
         include_macro : bool, default=True
             Load and include macroeconomic features
         select_features : bool, default=False
-            Apply BorutaShap feature selection
+            Apply Boruta feature selection (on training data only)
         boruta_params : dict, optional
-            Parameters for BorutaShap (n_trials, etc.)
-        align_indices : bool, default=True
-            Align feature and label indices
+            Parameters for Boruta (max_iter, percentile, pvalue, verbose)
+        split_data : bool, default=True
+            Split data into train/validation/test sets
             
         Returns
         -------
-        tuple of (pd.DataFrame, pd.DataFrame)
+        tuple of (pd.DataFrame, pd.Series)
             (features, labels) ready for training
+            If split_data=True, sets self.X_train, self.y_train, etc.
             
         Notes
         -----
-        Feature combination order:
-        1. Technical features (from asset data)
-        2. Macroeconomic features (if include_macro=True)
-        
         Feature selection (if select_features=True):
-        - Uses BorutaShap algorithm
-        - Should use PGTS cross-validation (TODO)
-        - Reduces dimensionality by selecting top features
+        - Uses standard Boruta algorithm
+        - Applied ONLY on training data to avoid data leakage
+        - Same features used for validation and test sets
         """
         if self.features is None or self.labels is None:
             raise ValueError(
@@ -610,15 +592,14 @@ class KMRF:
             )
         
         print(f"\n{'='*80}")
-        print(f"PREPARING TRAINING DATA")
+        print(f"PREPARING TRAINING DATA FOR {self.asset_name}")
         print(f"{'='*80}")
         
         # Step 1: Start with technical features
         X = self.features.copy()
-        y = self.labels.copy()
         
         print(f"\nStep 1: Technical Features")
-        print(f"  Shape: {X.shape}")
+        print(f"  Features Shape: {X.shape}")
         
         # Step 2: Load and combine macro data if requested
         if include_macro:
@@ -627,117 +608,249 @@ class KMRF:
                 self.load_macro_data()
             
             if self.macro_data is not None:
-                # Combine with existing features
-                X = pd.concat([X, self.macro_data], axis=1)
+                # Align macro data to feature index
+                macro_aligned = self.macro_data.reindex(X.index).ffill()
+                X = pd.concat([X, macro_aligned], axis=1)
                 print(f"  Combined shape: {X.shape}")
             else:
                 print(f"  Macro data not available, skipping...")
         else:
             print(f"\nStep 2: Skipping macroeconomic data")
         
-        # Step 3: Transform labels
+        # Step 3: Get labels (adapted or original)
         if transform_labels:
-            print(f"\nStep 3: Transforming Labels")
-            print("  4-regime → 3-class (Bullish=1, Bearish=-1, Other=0)")
-            y = self.adapt_regime_labels(price_data=self.raw_data, labels=y)
+            if self.adapted_labels is not None:
+                # Use pre-adapted labels
+                print(f"\nStep 3: Using Pre-Adapted Labels")
+                print(f"  (3-class labels from previous adapt_regime_labels() call)")
+                y = self.adapted_labels.copy()
+            else:
+                # Adapt now
+                print(f"\nStep 3: Transforming Labels")
+                print("  4-regime → 3-class (Bullish=1, Bearish=-1, Other=0)")
+                y = self.adapt_regime_labels(price_data=None, labels=self.labels)
         else:
-            print(f"\nStep 3: Keeping original 4-regime labels")
+            # Use original 4-regime labels
+            print(f"\nStep 3: Using Original 4-Regime Labels")
+            y = self.labels.copy()
         
-        # Step 4: Align indices
-        if align_indices:
-            print(f"\nStep 4: Aligning Indices")
-            print(f"  Features date range: {X.index[0]} to {X.index[-1]}")
-            print(f"  Labels date range: {y.index[0]} to {y.index[-1]}")
-            
-            # Reindex features to match label dates
-            X = X.reindex(y.index)
-            
-            # Identify columns with too many NaN values (> 50% of label period)
-            nan_threshold = 0.5
-            nan_counts = X.isna().sum()
-            total_rows = len(X)
-            bad_cols = nan_counts[nan_counts > total_rows * nan_threshold].index.tolist()
-            
-            if bad_cols:
-                print(f"  Dropping {len(bad_cols)} features with >{nan_threshold*100:.0f}% NaN values")
-                X = X.drop(columns=bad_cols)
-            
-            # Forward-fill and backward-fill remaining NaN values
-            # This handles features calculated on later data
-            X = X.ffill().bfill()
-            
-            # Drop any remaining rows with NaN (should be minimal now)
-            valid_mask = ~(X.isna().any(axis=1) | y.isna().any(axis=1))
-            rows_before = len(X)
-            X = X[valid_mask]
-            y = y[valid_mask]
-            rows_dropped = rows_before - len(X)
-            
-            print(f"  Final date range: {X.index[0]} to {X.index[-1]}")
-            print(f"  Total training rows: {len(X)}")
-            if rows_dropped > 0:
-                print(f"  (Dropped {rows_dropped} rows with remaining NaN)")
+        print(f"  Labels Shape: ({len(y)},)")
         
-        # Step 5: Handle missing values
-        print(f"\nStep 5: Handling Missing Values")
-        X_missing = X.isna().sum().sum()
-        y_missing = y.isna().sum().sum()
-        print(f"  Missing - Features: {X_missing}, Labels: {y_missing}")
+        # Step 4: Clean features
+        print(f"\nStep 4: Cleaning Features")
+        print(f"  Features date range: {X.index[0]} to {X.index[-1]}")
+        print(f"  Labels date range: {y.index[0]} to {y.index[-1]}")
         
-        if X_missing > 0 or y_missing > 0:
-            print("  Dropping rows with NaN...")
-            valid_mask = ~(X.isna().any(axis=1) | y.isna().any(axis=1))
-            X = X[valid_mask]
-            y = y[valid_mask]
-            print(f"  Remaining rows: {len(X)}")
+        # Identify columns with too many NaN values across ALL data
+        nan_threshold = 0.5
+        nan_counts = X.isna().sum()
+        total_rows = len(X)
+        bad_cols = nan_counts[nan_counts > total_rows * nan_threshold].index.tolist()
         
-        # Step 6: Feature selection
+        if bad_cols:
+            print(f"  Dropping {len(bad_cols)} features with >{nan_threshold*100:.0f}% NaN values")
+            X = X.drop(columns=bad_cols)
+        
+        # Forward-fill and backward-fill NaN values
+        X = X.ffill().bfill()
+        
+        print(f"  Features ready across full date range")
+        
+        # Step 5: Split data if requested
+        if split_data:
+            print(f"\nStep 5: Splitting Data")
+            self.split_train_val_test(X, y, select_features=select_features, boruta_params=boruta_params)
+            return self.X_train, self.y_train
+        else:
+            print(f"\nStep 5: No data splitting")
+            
+            # Step 6: Feature selection on full dataset
+            if select_features:
+                print(f"\nStep 6: Feature Selection (Boruta)")
+                if boruta_params is None:
+                    boruta_params = {'max_iter': 100}
+                
+                selected_features = self.select_features_boruta(X, y, **boruta_params)
+                X = X[selected_features]
+            else:
+                print(f"\nStep 6: Skipping feature selection")
+            
+            return X, y
+    
+    def split_train_val_test(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        select_features: bool = False,
+        boruta_params: Optional[Dict] = None
+    ) -> None:
+        """
+        Split data into train, validation, and test sets.
+        
+        Training: Where KAMA+MSR labels exist (features + labels)
+        Validation: validation_start to validation_end (features only, no labels)
+        Test: test_start onwards (features only, no labels)
+        
+        Note: KAMA+MSR labels only exist for training period to avoid lookahead bias.
+        Validation and test sets have features but no labels - they're used for
+        generating predictions from the trained model.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame
+            Features (extends beyond label period)
+        y : pd.Series
+            Labels (only available for training period)
+        select_features : bool, default=False
+            Apply Boruta feature selection on training data
+        boruta_params : dict, optional
+            Parameters for Boruta
+        """
+        print(f"  Train/Validation/Test Split:")
+        print(f"    Training   : Before {self.validation_start.date()}")
+        print(f"    Validation : {self.validation_start.date()} to {self.validation_end.date()}")
+        print(f"    Test       : {self.test_start.date()} to End")
+        
+        # Split features by dates FIRST (features have full date range)
+        train_dates_mask = X.index < self.validation_start
+        val_mask = (X.index >= self.validation_start) & (X.index <= self.validation_end)
+        test_mask = X.index >= self.test_start
+        
+        # Get training features where dates < validation_start
+        X_train_dates = X[train_dates_mask].copy()
+        
+        # Intersect training features with label dates (filter to where labels exist)
+        common_train_idx = X_train_dates.index.intersection(y.index)
+        self.X_train = X_train_dates.loc[common_train_idx]
+        self.y_train = y.loc[common_train_idx]
+        
+        # Validation: Features only (from full feature set X)
+        self.X_val = X[val_mask].copy()
+        self.y_val = None
+        
+        # Test: Features only (from full feature set X)
+        self.X_test = X[test_mask].copy()
+        self.y_test = None
+        
+        print(f"\n  Split sizes:")
+        if len(self.X_train) > 0:
+            print(f"    Training   : {len(self.X_train)} samples with labels ({self.X_train.index[0].date()} to {self.X_train.index[-1].date()})")
+        else:
+            print(f"    Training   : 0 samples (EMPTY)")
+        
+        if len(self.X_val) > 0:
+            print(f"    Validation : {len(self.X_val)} samples (features only, no labels) ({self.X_val.index[0].date()} to {self.X_val.index[-1].date()})")
+        else:
+            print(f"    Validation : 0 samples (EMPTY)")
+        
+        if len(self.X_test) > 0:
+            print(f"    Test       : {len(self.X_test)} samples (features only, no labels) ({self.X_test.index[0].date()} to {self.X_test.index[-1].date()})")
+        else:
+            print(f"    Test       : 0 samples (EMPTY)")
+        
+        # Feature selection on training data only
         if select_features:
-            print(f"\nStep 6: Feature Selection (BorutaShap)")
+            print(f"\n  Applying Boruta feature selection on training data...")
             if boruta_params is None:
-                boruta_params = {'n_trials': 100}
+                boruta_params = {'max_iter': 100}
             
-            selected_features = self.select_features_boruta(X, y, **boruta_params)
-            X = X[selected_features]
+            selected_features = self.select_features_boruta(self.X_train, self.y_train, **boruta_params)
+            
+            # Apply same features to validation and test
+            self.X_train = self.X_train[selected_features]
+            if len(self.X_val) > 0:
+                self.X_val = self.X_val[selected_features]
+            if len(self.X_test) > 0:
+                self.X_test = self.X_test[selected_features]
+            
+            print(f"  Feature selection applied to all splits")
+        
+        # Print label distributions (only for training)
+        print(f"\n  Label distribution:")
+        print(f"    Training (with labels):")
+        if len(self.y_train) > 0:
+            dist = self.y_train.value_counts().sort_index()
+            label_map = {-1: 'Bearish', 0: 'Other', 1: 'Bullish'}
+            for label_val in [1, 0, -1]:
+                if label_val in dist:
+                    count = dist[label_val]
+                    pct = (count / len(self.y_train)) * 100
+                    print(f"      {label_map[label_val]:>8} ({label_val:>2}): {count:>5} ({pct:>5.1f}%)")
         else:
-            print(f"\nStep 6: Skipping feature selection")
+            print(f"      EMPTY")
         
-        # Final summary
+        print(f"    Validation: No labels (prediction only)")
+        print(f"    Test: No labels (prediction only)")
+        
         print(f"\n{'='*80}")
-        print(f"TRAINING DATA READY")
+        print(f"DATA PREPARATION COMPLETE")
         print(f"{'='*80}")
-        print(f"Features shape: {X.shape}")
-        print(f"Labels shape: {y.shape}")
-        
-        if transform_labels:
-            print(f"\nOverall label distribution:")
-            label_counts = {-1: 0, 0: 0, 1: 0}
-            for col in y.columns:
-                col_name = col[1] if isinstance(col, tuple) else col
-                if 'adapted_regime' in str(col_name) or 'regime' in str(col_name):
-                    asset_labels = y[col]
-                    for val in [-1, 0, 1]:
-                        label_counts[val] += (asset_labels == val).sum()
-            
-            total = sum(label_counts.values())
-            if total > 0:
-                print(f"  Bullish  ( 1): {label_counts[1]:>6} ({100*label_counts[1]/total:>5.1f}%)")
-                print(f"  Other    ( 0): {label_counts[0]:>6} ({100*label_counts[0]/total:>5.1f}%)")
-                print(f"  Bearish (-1): {label_counts[-1]:>6} ({100*label_counts[-1]/total:>5.1f}%)")
-        
-        return X, y
+        print(f"\nNote: Validation and test sets have features only.")
+        print(f"      Use trained model to generate predictions on these sets.")
     
     def __repr__(self) -> str:
         """String representation of the KMRF model."""
-        status = [f"KMRF({self.asset_class}, {self.end_date})"]
+        status = [f"KMRF('{self.asset_name}', {self.asset_class})"]
         
         if self.raw_data is not None:
-            status.append(f"Data: {self.raw_data.shape[0]}×{len(self.asset_names)} assets")
+            status.append(f"Data: {self.raw_data.shape}")
         
         if self.features is not None:
             status.append(f"Features: {self.features.shape}")
         
         if self.labels is not None:
-            status.append(f"Labels: {self.labels.shape}")
+            status.append(f"4-Regime Labels: ({len(self.labels)},)")
+        
+        if self.adapted_labels is not None:
+            status.append(f"3-Class Labels: ({len(self.adapted_labels)},)")
+        
+        if self.X_train is not None:
+            status.append(f"Train: {self.X_train.shape}")
+        
+        if self.X_val is not None:
+            status.append(f"Val: {self.X_val.shape}")
+        
+        if self.X_test is not None:
+            status.append(f"Test: {self.X_test.shape}")
         
         return " | ".join(status)
+    
+    def get_split_info(self) -> dict:
+        """
+        Get information about the data splits.
+        
+        Returns
+        -------
+        dict
+            Dictionary containing split information
+        """
+        info = {
+            'train': {
+                'size': len(self.X_train) if self.X_train is not None else 0,
+                'features': self.X_train.shape[1] if self.X_train is not None else 0,
+                'has_labels': self.y_train is not None,
+                'date_range': (
+                    f"{self.X_train.index[0].date()} to {self.X_train.index[-1].date()}"
+                    if self.X_train is not None and len(self.X_train) > 0 else "N/A"
+                )
+            },
+            'validation': {
+                'size': len(self.X_val) if self.X_val is not None else 0,
+                'features': self.X_val.shape[1] if self.X_val is not None else 0,
+                'has_labels': False,
+                'date_range': (
+                    f"{self.X_val.index[0].date()} to {self.X_val.index[-1].date()}"
+                    if self.X_val is not None and len(self.X_val) > 0 else "N/A"
+                )
+            },
+            'test': {
+                'size': len(self.X_test) if self.X_test is not None else 0,
+                'features': self.X_test.shape[1] if self.X_test is not None else 0,
+                'has_labels': False,
+                'date_range': (
+                    f"{self.X_test.index[0].date()} to {self.X_test.index[-1].date()}"
+                    if self.X_test is not None and len(self.X_test) > 0 else "N/A"
+                )
+            }
+        }
+        return info

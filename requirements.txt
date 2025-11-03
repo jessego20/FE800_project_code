@@ -21,4 +21,4 @@ numba
 scikit-learn
 ta
 tsfresh
-BorutaShap
+boruta
