@@ -63,7 +63,7 @@ class KMRF:
         validation_start: str = '2019-04-01',
         validation_end: str = '2019-09-30',
         test_start: str = '2020-01-01',
-        random_seed: int = 42
+        random_seed: int = 1010
     ):
         """
         Initialize the KMRF model for a specific asset.
@@ -635,7 +635,8 @@ class KMRF:
         print(f"  Labels Shape: ({len(y)},)")
         
         # Step 4: Clean features
-        print(f"\nStep 4: Cleaning Features")
+        print(f"\nStep 4: Cleaning Features - start when labels exist")
+        X = X.loc[y.index[0]:]
         print(f"  Features date range: {X.index[0]} to {X.index[-1]}")
         print(f"  Labels date range: {y.index[0]} to {y.index[-1]}")
         
