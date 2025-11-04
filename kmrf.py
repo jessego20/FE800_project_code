@@ -1014,12 +1014,12 @@ class KMRF:
         Generate regime predictions for new data.
         
         This method produces ex-ante regime predictions for the next trading day.
-        Returns probabilities for each of the 3 regime classes per asset.
+        Returns probabilities for each of the regime classes per asset.
         
         Parameters
         ----------
         X : pd.DataFrame, optional
-            Feature matrix for prediction. If None, uses current features
+            Feature matrix for prediction. If None, uses X_test from train/val/test split
         return_proba : bool, default=True
             Return probabilities instead of class predictions
             
@@ -1027,7 +1027,7 @@ class KMRF:
         -------
         pd.DataFrame or np.ndarray
             If return_proba=True: DataFrame with columns ['P(Bullish)', 'P(Other)', 'P(Bearish)']
-            If return_proba=False: Array of predicted classes (1, 0, -1)
+            If return_proba=False: Array of predicted classes (1, 0, -1 for adapted; 0,1,2,3 for original)
             
         Notes
         -----
@@ -1038,25 +1038,39 @@ class KMRF:
         
         Examples
         --------
-        >>> predictions = kmrf.predict()  # Get probabilities
-        >>> classes = kmrf.predict(return_proba=False)  # Get class predictions
+        >>> predictions = kmrf.predict()  # Get probabilities for X_test
+        >>> predictions = kmrf.predict(X_test, return_proba=True)  # Explicit
+        >>> classes = kmrf.predict(X_test, return_proba=False)  # Get class predictions
         """
         if self.rf_model is None:
-            raise ValueError("Model not trained. Call fit() first.")
+            raise ValueError("Model not trained. Call fit() first or load a saved model.")
         
         if X is None:
-            if self.features is None:
-                raise ValueError("No features available for prediction.")
+            if self.X_test is None:
+                raise ValueError("No test data available. Either provide X or run prepare_training_data() with split_data=True.")
             X = self.X_test
         
         print(f"\nGenerating predictions...")
+        print(f"  Input shape: {X.shape}")
         
-        # Flatten multi-index
+        # Apply feature selection if model was trained with selected features
+        if self.selected_features is not None and len(self.selected_features) > 0:
+            # Check if we need to select features or if they're already selected
+            missing_features = set(self.selected_features) - set(X.columns)
+            if missing_features:
+                # X has more features than selected - need to filter
+                print(f"  Applying feature selection: {len(self.selected_features)} features")
+                X = X[self.selected_features]
+            else:
+                # X already has only the selected features
+                print(f"  Using pre-selected features: {len(X.columns)}")
+        
+        # Flatten multi-index columns if present
         X_flat = X.copy()
         X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
                           for col in X.columns]
         
-        # Handle NaN
+        # Handle NaN values
         X_clean = X_flat.fillna(method='ffill').fillna(method='bfill')
         
         if return_proba:
@@ -1074,16 +1088,16 @@ class KMRF:
             
             result = pd.DataFrame(
                 proba,
-                index=X.index,  # Shift index to represent next trading day prediction
+                index=X.index,
                 columns=[class_names.get(c, f'P(Class_{c})') for c in classes]
             )
             
-            print(f"Generated probability predictions: {result.shape}")
+            print(f"✓ Generated probability predictions: {result.shape}")
             return result
         else:
             # Get class predictions
             predictions = self.rf_model.predict(X_clean.values)
-            print(f"Generated class predictions: {len(predictions)}")
+            print(f"✓ Generated class predictions: {len(predictions)}")
             return predictions
     
     def save_model(
@@ -1098,14 +1112,19 @@ class KMRF:
         Saves the complete model including:
         - Random Forest classifier
         - Selected features (if feature selection was used)
-        - Model metadata (asset class, end_date, etc.)
+        - Train/val/test splits (X_train, y_train, X_val, X_test)
+        - Model metadata (asset class, end_date, classification_type, etc.)
+        
+        This allows you to load the model later without retraining or re-running feature selection.
         
         Parameters
         ----------
         model_dir : str or Path, optional
-            Directory to save model. If None, uses 'saved_models/KMRF/{asset_class}/{end_date}/'
+            Directory to save model. If None, uses 'saved_models/KMRF/{classification_type}_labels/{asset_class}/'
         model_name : str, optional
             Model filename. If None, auto-generates name
+        boruta_used : bool, default=False
+            Whether Boruta feature selection was used (adds to filename)
             
         Returns
         -------
@@ -1115,8 +1134,8 @@ class KMRF:
         Examples
         --------
         >>> kmrf.fit()
-        >>> model_path = kmrf.save_model()
-        >>> # Load later: kmrf.load_model(model_path)
+        >>> model_path = kmrf.save_model(boruta_used=True)
+        >>> # Load later: kmrf = KMRF.load_model(model_path)
         """
         if self.rf_model is None:
             raise ValueError("No model to save. Train model first with fit().")
@@ -1132,7 +1151,6 @@ class KMRF:
         
         # Auto-generate filename
         if model_name is None:
-            # n_features = len(self.selected_features) if self.selected_features else 'all'
             model_name = f"KMRF_{('-').join(self.asset_name.split())}_{self.end_date}"
             if boruta_used:
                 model_name += f"_boruta.pkl"
@@ -1141,19 +1159,36 @@ class KMRF:
         
         model_path = model_dir / model_name
         
-        # Package model data
+        # Package model data - save everything needed to skip retraining
         model_data = {
             'rf_model': self.rf_model,
             'selected_features': self.selected_features,
             'asset_class': self.asset_class,
-            'end_date': self.end_date,
-            'random_seed': self.random_seed,
             'asset_name': self.asset_name,
-            'model_params': self.rf_model.get_params()
+            'end_date': self.end_date,
+            'classification_type': self.classification_type,
+            'random_seed': self.random_seed,
+            'model_params': self.rf_model.get_params(),
+            'validation_start': self.validation_start,
+            'validation_end': self.validation_end,
+            'test_start': self.test_start,
+            # Save train/val/test splits
+            'X_train': self.X_train,
+            'y_train': self.y_train,
+            'X_val': self.X_val,
+            'X_test': self.X_test,
+            'y_val': self.y_val,
+            'y_test': self.y_test,
+            'boruta_used': boruta_used
         }
         
         # Save
         print(f"\nSaving model to: {model_path}")
+        print(f"  Asset: {self.asset_name}")
+        print(f"  Classification type: {self.classification_type}")
+        print(f"  Features: {len(self.selected_features) if self.selected_features else 'all'}")
+        print(f"  Training samples: {len(self.X_train) if self.X_train is not None else 0}")
+        
         with open(model_path, 'wb') as f:
             pickle.dump(model_data, f)
         
@@ -1162,51 +1197,98 @@ class KMRF:
         return model_path
     
     @classmethod
-    def load_model(cls, model_path: Union[str, Path]) -> 'KMRF':
+    def load_model(cls, model_path: Union[str, Path], use_ready_data: bool = True) -> 'KMRF':
         """
         Load a saved KMRF model.
+        
+        This loads a complete trained model, including:
+        - Trained Random Forest classifier
+        - Selected features (if feature selection was used)
+        - Train/val/test data splits
+        - All model metadata
+        
+        After loading, you can immediately use predict() without retraining.
         
         Parameters
         ----------
         model_path : str or Path
             Path to saved model file
+        use_ready_data : bool, default=True
+            Whether to use ready data when initializing
             
         Returns
         -------
         KMRF
-            Loaded model instance
+            Loaded model instance with all state restored
             
         Examples
         --------
-        >>> kmrf = KMRF.load_model('saved_models/KMRF/us_equity/20190101/model.pkl')
-        >>> predictions = kmrf.predict(new_features)
+        >>> # Load a previously trained model
+        >>> kmrf = KMRF.load_model('saved_models/KMRF/adapted_labels/us_equity/KMRF_SPY_20190101_boruta.pkl')
+        >>> 
+        >>> # Load data for prediction period
+        >>> kmrf.load_data()
+        >>> features = kmrf.get_features()
+        >>> 
+        >>> # Generate predictions immediately (no training needed)
+        >>> predictions = kmrf.predict(kmrf.X_test, return_proba=True)
         """
         model_path = Path(model_path)
         
         if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
-        print(f"Loading model from: {model_path}")
+        print(f"\n{'='*80}")
+        print(f"LOADING SAVED KMRF MODEL")
+        print(f"{'='*80}")
+        print(f"Model path: {model_path}")
         
         with open(model_path, 'rb') as f:
             model_data = pickle.load(f)
         
-        # Create instance
+        # Create instance with saved parameters
         kmrf = cls(
             asset_name=model_data['asset_name'],
             asset_class=model_data['asset_class'],
             end_date=model_data['end_date'],
-            random_seed=model_data['random_seed']
+            use_ready_data=use_ready_data,
+            validation_start=model_data.get('validation_start'),
+            validation_end=model_data.get('validation_end'),
+            test_start=model_data.get('test_start'),
+            random_seed=model_data.get('random_seed', 42),
+            classification_type=model_data.get('classification_type', 'adapted')
         )
         
         # Restore model components
         kmrf.rf_model = model_data['rf_model']
         kmrf.selected_features = model_data['selected_features']
-        kmrf.asset_name = model_data['asset_name']
         
-        print(f"✓ Model loaded successfully")
+        # Restore train/val/test splits
+        kmrf.X_train = model_data.get('X_train')
+        kmrf.y_train = model_data.get('y_train')
+        kmrf.X_val = model_data.get('X_val')
+        kmrf.X_test = model_data.get('X_test')
+        kmrf.y_val = model_data.get('y_val')
+        kmrf.y_test = model_data.get('y_test')
+        
+        print(f"\n✓ Model loaded successfully")
+        print(f"  Asset: {kmrf.asset_name}")
         print(f"  Asset class: {kmrf.asset_class}")
+        print(f"  Classification type: {kmrf.classification_type}")
         print(f"  Training end date: {kmrf.end_date}")
         print(f"  Features: {len(kmrf.selected_features) if kmrf.selected_features else 'all'}")
+        print(f"  Boruta used: {model_data.get('boruta_used', 'Unknown')}")
+        
+        if kmrf.X_train is not None:
+            print(f"\n  Restored data splits:")
+            print(f"    Training samples: {len(kmrf.X_train)} (with labels)")
+            if kmrf.X_val is not None:
+                print(f"    Validation samples: {len(kmrf.X_val)} (features only)")
+            if kmrf.X_test is not None:
+                print(f"    Test samples: {len(kmrf.X_test)} (features only)")
+        
+        print(f"\n  Model is ready for predictions!")
+        print(f"  You can now call predict() without retraining.")
+        print(f"{'='*80}")
         
         return kmrf
