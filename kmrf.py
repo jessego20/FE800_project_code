@@ -41,15 +41,20 @@ class KMRF:
     - Loading macroeconomic data and aligning it
     - Computing/loading technical features
     - Loading KAMA+MSR regime labels from saved models
-    - Adapting 4-regime labels to 3-class KMRF labels
+    - Optionally adapting 4-regime labels to 3-class KMRF labels
     - Feature selection using Boruta algorithm
     - Random Forest training for regime prediction
     - Performance evaluation
     
-    The model predicts three regime classes:
-    - Bullish (1): LV bullish + extension to peak of next HV bullish
-    - Bearish (-1): HV bearish + extension to trough of next LV bearish
-    - Other (0): Remaining periods
+    Classification Types:
+    - Adapted (default): 3-class KMRF labels:
+      * Bullish (1): LV bullish + extension to peak of next HV bullish
+      * Bearish (-1): HV bearish + extension to trough of next LV bearish
+      * Other (0): Remaining periods
+    - Original: 4-regime KAMA+MSR labels:
+      * LV Bullish (0), LV Bearish (1), HV Bullish (2), HV Bearish (3)
+    
+    The classification type is determined during initialization via classification_type parameter.
     """
     
     def __init__(
@@ -63,7 +68,8 @@ class KMRF:
         validation_start: str = '2019-04-01',
         validation_end: str = '2019-09-30',
         test_start: str = '2020-01-01',
-        random_seed: int = 1010
+        random_seed: int = 1010,
+        classification_type: str = 'adapted'
     ):
         """
         Initialize the KMRF model for a specific asset.
@@ -88,11 +94,16 @@ class KMRF:
             End date for validation period
         test_start : str, default='2020-01-01'
             Start date for test period (extends to end of available data)
-        random_seed : int, default=42
+        random_seed : int, default=1010
             Random seed for reproducibility
+        classification_type : str, default='adapted'
+            Type of regime classification to use:
+            - 'adapted': 3-class KMRF labels (Bullish=1, Bearish=-1, Other=0)
+            - 'original': 4-regime KAMA+MSR labels (0=LV Bullish, 1=LV Bearish, 2=HV Bullish, 3=HV Bearish)
         """
         self.asset_name = asset_name
         self.asset_class = asset_class
+        self.classification_type = classification_type
         self.end_date = end_date
         self.random_seed = random_seed
         self.use_ready_data = use_ready_data
@@ -101,6 +112,12 @@ class KMRF:
         self.validation_start = pd.to_datetime(validation_start)
         self.validation_end = pd.to_datetime(validation_end)
         self.test_start = pd.to_datetime(test_start)
+        
+        # Validate classification type
+        if classification_type not in ['adapted', 'original']:
+            raise ValueError(
+                f"classification_type must be 'adapted' or 'original', got '{classification_type}'"
+            )
         
         # Set random seed
         np.random.seed(self.random_seed)
@@ -154,6 +171,7 @@ class KMRF:
         print(f"KMRF model initialized")
         print(f"  Asset: {self.asset_name}")
         print(f"  Asset class: {self.asset_class}")
+        print(f"  Classification type: {self.classification_type}")
         print(f"  End date: {self.end_date}")
         print(f"  Using pre-computed features: {self.use_ready_data}")
         print(f"  Data path: {self.data_path}")
@@ -541,7 +559,6 @@ class KMRF:
     
     def prepare_training_data(
         self,
-        transform_labels: bool = True,
         include_macro: bool = True,
         select_features: bool = False,
         boruta_params: Optional[Dict] = None,
@@ -552,15 +569,13 @@ class KMRF:
         
         This comprehensive method:
         1. Optionally loads and combines macroeconomic data
-        2. Transforms 4-regime KAMA+MSR labels to 3-class KMRF labels
+        2. Uses the classification type specified during initialization
         3. Aligns feature and label indices
         4. Optionally applies Boruta feature selection (on training data only)
         5. Optionally splits data into train/validation/test sets
         
         Parameters
         ----------
-        transform_labels : bool, default=True
-            Transform KAMA+MSR 4-regime to KMRF 3-class labels
         include_macro : bool, default=True
             Load and include macroeconomic features
         select_features : bool, default=False
@@ -578,6 +593,10 @@ class KMRF:
             
         Notes
         -----
+        The classification type is determined during initialization:
+        - If classification_type='adapted': Uses 3-class KMRF labels
+        - If classification_type='original': Uses 4-regime KAMA+MSR labels
+        
         Feature selection (if select_features=True):
         - Uses standard Boruta algorithm
         - Applied ONLY on training data to avoid data leakage
@@ -615,8 +634,8 @@ class KMRF:
         else:
             print(f"\nStep 2: Skipping macroeconomic data")
         
-        # Step 3: Get labels (adapted or original)
-        if transform_labels:
+        # Step 3: Get labels based on classification type
+        if self.classification_type == 'adapted':
             if self.adapted_labels is not None:
                 # Use pre-adapted labels
                 print(f"\nStep 3: Using Pre-Adapted Labels")
@@ -624,12 +643,12 @@ class KMRF:
                 y = self.adapted_labels.copy()
             else:
                 # Adapt now
-                print(f"\nStep 3: Transforming Labels")
+                print(f"\nStep 3: Adapting Labels")
                 print("  4-regime → 3-class (Bullish=1, Bearish=-1, Other=0)")
                 y = self.adapt_regime_labels(price_data=None, labels=self.labels)
-        else:
-            # Use original 4-regime labels
+        else:  # original
             print(f"\nStep 3: Using Original 4-Regime Labels")
+            print(f"  (LV Bullish=0, LV Bearish=1, HV Bullish=2, HV Bearish=3)")
             y = self.labels.copy()
         
         print(f"  Labels Shape: ({len(y)},)")
@@ -769,12 +788,21 @@ class KMRF:
         print(f"    Training (with labels):")
         if len(self.y_train) > 0:
             dist = self.y_train.value_counts().sort_index()
-            label_map = {-1: 'Bearish', 0: 'Other', 1: 'Bullish'}
-            for label_val in [1, 0, -1]:
-                if label_val in dist:
-                    count = dist[label_val]
-                    pct = (count / len(self.y_train)) * 100
-                    print(f"      {label_map[label_val]:>8} ({label_val:>2}): {count:>5} ({pct:>5.1f}%)")
+            
+            if self.classification_type == 'adapted':
+                label_map = {-1: 'Bearish', 0: 'Other', 1: 'Bullish'}
+                for label_val in [1, 0, -1]:
+                    if label_val in dist:
+                        count = dist[label_val]
+                        pct = (count / len(self.y_train)) * 100
+                        print(f"      {label_map[label_val]:>8} ({label_val:>2}): {count:>5} ({pct:>5.1f}%)")
+            else:  # original
+                label_map = {0: 'LV_Bull', 1: 'LV_Bear', 2: 'HV_Bull', 3: 'HV_Bear'}
+                for label_val in [0, 1, 2, 3]:
+                    if label_val in dist:
+                        count = dist[label_val]
+                        pct = (count / len(self.y_train)) * 100
+                        print(f"      {label_map[label_val]:>8} ({label_val:>2}): {count:>5} ({pct:>5.1f}%)")
         else:
             print(f"      EMPTY")
         
@@ -1026,7 +1054,11 @@ class KMRF:
             # Create DataFrame with meaningful column names
             # Classes are sorted, so we need to map them correctly
             classes = self.rf_model.classes_
-            class_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
+            
+            if self.classification_type == 'adapted':
+                class_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
+            else:  # original
+                class_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
             
             result = pd.DataFrame(
                 proba,
