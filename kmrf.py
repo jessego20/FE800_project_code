@@ -853,3 +853,311 @@ class KMRF:
             }
         }
         return info
+    
+    def fit(
+        self,
+        X: Optional[pd.DataFrame] = None,
+        y: Optional[pd.DataFrame] = None,
+        rf_params: Optional[Dict] = None
+    ) -> 'KMRF':
+        """
+        Fit Random Forest classifier for regime prediction.
+        
+        This method trains the RF component of the KMRF model using prepared features
+        and adapted labels. The trained model can then generate ex-ante regime predictions.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame, optional
+            Feature matrix. If None, uses output from prepare_training_data()
+        y : pd.DataFrame, optional
+            Target labels. If None, uses output from prepare_training_data()
+        rf_params : dict, optional
+            Random Forest hyperparameters. Defaults based on paper Table 2:
+            - n_estimators: 100-300
+            - max_depth: 1-20
+            - min_samples_split: 1-100
+            - min_samples_leaf: 1-100
+            
+        Returns
+        -------
+        KMRF
+            Self (for method chaining)
+            
+        Notes
+        -----
+        Per the paper, hyperparameters should be optimized using Optuna to maximize
+        the Sortino ratio. This implementation uses reasonable defaults.
+        
+        Examples
+        --------
+        >>> kmrf.fit()  # Uses data from prepare_training_data()
+        >>> kmrf.fit(X_train, y_train, rf_params={'n_estimators': 200})
+        """
+        from sklearn.ensemble import RandomForestClassifier
+        
+        if X is None or y is None:
+            raise ValueError("Features and labels required. Call prepare_training_data() first.")
+        
+        print(f"\n{'='*80}")
+        print(f"TRAINING RANDOM FOREST CLASSIFIER")
+        print(f"{'='*80}")
+        
+        # Default RF parameters based on paper
+        if self.asset_class == 'commodity':
+            default_params = {
+                'n_estimators': 280,  # Paper Table 2 values
+                'max_depth': 3,
+                'min_samples_split': 18,
+                'min_samples_leaf': 95,
+                'max_samples': 0.125,
+                'max_features': 0.4,
+                'min_weight_fraction_leaf': 0.02,
+                'random_state': self.random_seed,
+                'n_jobs': -1
+            }
+        else:    
+            default_params = {
+                'n_estimators': 220,  # Paper Table 2 values
+                'max_depth': 13,
+                'min_samples_split': 76,
+                'min_samples_leaf': 95,
+                'max_samples': 0.36,
+                'max_features': 0.25,
+                'min_weight_fraction_leaf': 0.045,
+                'random_state': self.random_seed,
+                'n_jobs': -1
+            }
+        
+        if rf_params:
+            default_params.update(rf_params)
+        
+        print(f"RF Parameters:")
+        for key, val in default_params.items():
+            print(f"  {key}: {val}")
+        
+        # Flatten multi-index for sklearn
+        X_flat = X.copy()
+        X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
+                          for col in X.columns]
+        
+        # y_flat = y.iloc[:, 0] if len(y.shape) > 1 else y
+        y_shifted = y.shift(-1)  # Shift labels to predict next period
+        
+        # Remove NaN
+        valid_idx = ~(X_flat.isna().any(axis=1) | y_shifted.isna())
+        X_clean = X_flat[valid_idx]
+        y_clean = y_shifted[valid_idx]
+        
+        print(f"\nTraining samples: {len(X_clean)}")
+        print(f"Features: {X_clean.shape[1]}")
+        print(f"Date range: {X_clean.index[0]} to {X_clean.index[-1]}")
+        
+        # Train Random Forest
+        print(f"\nFitting Random Forest...")
+        self.rf_model = RandomForestClassifier(**default_params, class_weight='balanced')
+        self.rf_model.fit(X_clean.values, y_clean.values)
+        
+        print(f"\n{'='*80}")
+        print(f"TRAINING COMPLETE")
+        print(f"{'='*80}")
+        print(f"Model ready for prediction")
+        
+        return self
+    
+    def predict(
+        self,
+        X: Optional[pd.DataFrame] = None,
+        return_proba: bool = True
+    ) -> Union[pd.DataFrame, np.ndarray]:
+        """
+        Generate regime predictions for new data.
+        
+        This method produces ex-ante regime predictions for the next trading day.
+        Returns probabilities for each of the 3 regime classes per asset.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame, optional
+            Feature matrix for prediction. If None, uses current features
+        return_proba : bool, default=True
+            Return probabilities instead of class predictions
+            
+        Returns
+        -------
+        pd.DataFrame or np.ndarray
+            If return_proba=True: DataFrame with columns ['P(Bullish)', 'P(Other)', 'P(Bearish)']
+            If return_proba=False: Array of predicted classes (1, 0, -1)
+            
+        Notes
+        -----
+        Predictions should be interpreted with CONTRARIAN strategy (per paper):
+        - High P(Bullish) → SHORT signal (market overbought)
+        - High P(Bearish) → LONG signal (market oversold)  
+        - High P(Other) → CLOSE position
+        
+        Examples
+        --------
+        >>> predictions = kmrf.predict()  # Get probabilities
+        >>> classes = kmrf.predict(return_proba=False)  # Get class predictions
+        """
+        if self.rf_model is None:
+            raise ValueError("Model not trained. Call fit() first.")
+        
+        if X is None:
+            if self.features is None:
+                raise ValueError("No features available for prediction.")
+            X = self.X_test
+        
+        print(f"\nGenerating predictions...")
+        
+        # Flatten multi-index
+        X_flat = X.copy()
+        X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
+                          for col in X.columns]
+        
+        # Handle NaN
+        X_clean = X_flat.fillna(method='ffill').fillna(method='bfill')
+        
+        if return_proba:
+            # Get probabilities for each class
+            proba = self.rf_model.predict_proba(X_clean.values)
+            
+            # Create DataFrame with meaningful column names
+            # Classes are sorted, so we need to map them correctly
+            classes = self.rf_model.classes_
+            class_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
+            
+            result = pd.DataFrame(
+                proba,
+                index=X.index,  # Shift index to represent next trading day prediction
+                columns=[class_names.get(c, f'P(Class_{c})') for c in classes]
+            )
+            
+            print(f"Generated probability predictions: {result.shape}")
+            return result
+        else:
+            # Get class predictions
+            predictions = self.rf_model.predict(X_clean.values)
+            print(f"Generated class predictions: {len(predictions)}")
+            return predictions
+    
+    def save_model(
+        self,
+        model_dir: Optional[Union[str, Path]] = None,
+        model_name: Optional[str] = None
+    ) -> Path:
+        """
+        Save trained KMRF model to disk.
+        
+        Saves the complete model including:
+        - Random Forest classifier
+        - Selected features (if feature selection was used)
+        - Model metadata (asset class, end_date, etc.)
+        
+        Parameters
+        ----------
+        model_dir : str or Path, optional
+            Directory to save model. If None, uses 'saved_models/KMRF/{asset_class}/{end_date}/'
+        model_name : str, optional
+            Model filename. If None, auto-generates name
+            
+        Returns
+        -------
+        Path
+            Full path to saved model file
+            
+        Examples
+        --------
+        >>> kmrf.fit()
+        >>> model_path = kmrf.save_model()
+        >>> # Load later: kmrf.load_model(model_path)
+        """
+        if self.rf_model is None:
+            raise ValueError("No model to save. Train model first with fit().")
+        
+        # Set default directory
+        if model_dir is None:
+            model_dir = Path(f'saved_models/KMRF/{self.asset_class}/{self.end_date}/')
+        else:
+            model_dir = Path(model_dir)
+        
+        # Create directory if it doesn't exist
+        model_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Auto-generate filename
+        if model_name is None:
+            n_features = len(self.selected_features) if self.selected_features else 'all'
+            model_name = f"KMRF_{self.asset_class}_{self.end_date}_{n_features}features.pkl"
+        
+        model_path = model_dir / model_name
+        
+        # Package model data
+        model_data = {
+            'rf_model': self.rf_model,
+            'selected_features': self.selected_features,
+            'asset_class': self.asset_class,
+            'end_date': self.end_date,
+            'random_seed': self.random_seed,
+            'asset_names': self.asset_names,
+            'model_params': self.rf_model.get_params()
+        }
+        
+        # Save
+        print(f"\nSaving model to: {model_path}")
+        with open(model_path, 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print(f"✓ Model saved successfully")
+        
+        return model_path
+    
+    @classmethod
+    def load_model(cls, model_path: Union[str, Path]) -> 'KMRF':
+        """
+        Load a saved KMRF model.
+        
+        Parameters
+        ----------
+        model_path : str or Path
+            Path to saved model file
+            
+        Returns
+        -------
+        KMRF
+            Loaded model instance
+            
+        Examples
+        --------
+        >>> kmrf = KMRF.load_model('saved_models/KMRF/us_equity/20190101/model.pkl')
+        >>> predictions = kmrf.predict(new_features)
+        """
+        model_path = Path(model_path)
+        
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        
+        print(f"Loading model from: {model_path}")
+        
+        with open(model_path, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        # Create instance
+        kmrf = cls(
+            asset_class=model_data['asset_class'],
+            end_date=model_data['end_date'],
+            random_seed=model_data['random_seed']
+        )
+        
+        # Restore model components
+        kmrf.rf_model = model_data['rf_model']
+        kmrf.selected_features = model_data['selected_features']
+        kmrf.asset_names = model_data['asset_names']
+        
+        print(f"✓ Model loaded successfully")
+        print(f"  Asset class: {kmrf.asset_class}")
+        print(f"  Training end date: {kmrf.end_date}")
+        print(f"  Features: {len(kmrf.selected_features) if kmrf.selected_features else 'all'}")
+        
+        return kmrf
+    
