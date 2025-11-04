@@ -1089,7 +1089,8 @@ class KMRF:
     def save_model(
         self,
         model_dir: Optional[Union[str, Path]] = None,
-        model_name: Optional[str] = None
+        model_name: Optional[str] = None,
+        boruta_used: bool = False
     ) -> Path:
         """
         Save trained KMRF model to disk.
@@ -1122,7 +1123,7 @@ class KMRF:
         
         # Set default directory
         if model_dir is None:
-            model_dir = Path(f'saved_models/KMRF/{self.asset_class}/{self.end_date}/')
+            model_dir = Path(f'saved_models/KMRF/{self.classification_type}_labels/{self.asset_class}/')
         else:
             model_dir = Path(model_dir)
         
@@ -1131,8 +1132,12 @@ class KMRF:
         
         # Auto-generate filename
         if model_name is None:
-            n_features = len(self.selected_features) if self.selected_features else 'all'
-            model_name = f"KMRF_{self.asset_class}_{self.end_date}_{n_features}features.pkl"
+            # n_features = len(self.selected_features) if self.selected_features else 'all'
+            model_name = f"KMRF_{('-').join(self.asset_name.split())}_{self.end_date}"
+            if boruta_used:
+                model_name += f"_boruta.pkl"
+            else:
+                model_name += f".pkl"
         
         model_path = model_dir / model_name
         
@@ -1143,7 +1148,7 @@ class KMRF:
             'asset_class': self.asset_class,
             'end_date': self.end_date,
             'random_seed': self.random_seed,
-            'asset_names': self.asset_names,
+            'asset_name': self.asset_name,
             'model_params': self.rf_model.get_params()
         }
         
@@ -1188,6 +1193,7 @@ class KMRF:
         
         # Create instance
         kmrf = cls(
+            asset_name=model_data['asset_name'],
             asset_class=model_data['asset_class'],
             end_date=model_data['end_date'],
             random_seed=model_data['random_seed']
@@ -1196,7 +1202,7 @@ class KMRF:
         # Restore model components
         kmrf.rf_model = model_data['rf_model']
         kmrf.selected_features = model_data['selected_features']
-        kmrf.asset_names = model_data['asset_names']
+        kmrf.asset_name = model_data['asset_name']
         
         print(f"✓ Model loaded successfully")
         print(f"  Asset class: {kmrf.asset_class}")
