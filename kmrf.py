@@ -20,7 +20,7 @@ import pickle
 from glob import glob
 
 # Import the TimeSeriesDerivedFields class for feature engineering
-import derive_data as dd
+# import derive_features as dd # feature engineering is completed in feature_engineering.ipynb and saved in 'ready' data 
 
 # Import for feature selection
 try:
