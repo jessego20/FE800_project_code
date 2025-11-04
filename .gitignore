@@ -1,3 +1,8 @@
 __pycache__/
 .env
 CLAUDE.md
+data/ready/us_equity.xlsx
+data/read/us_treasury.xlsx
+data/ready/int_equity.xlsx
+data/ready/commodity.xlsx
+data/ready/macro_data_all.xlsx

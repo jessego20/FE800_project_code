@@ -324,65 +324,53 @@ class KMRF:
         verbose: int = 2
     ) -> List[str]:
         """
-        Perform feature selection using Boruta algorithm.
+        Use Boruta algorithm for feature selection.
         
-        This implements standard Boruta adapted for time-series data to avoid data leakage.
-        
-        Parameters
-        ----------
+        Parameters:
+        -----------
         X : pd.DataFrame
-            Feature matrix (multi-index format)
-        y : pd.DataFrame
-            Target labels (multi-index format)
+            Feature matrix
+        y : pd.Series
+            Target labels
         max_iter : int, default=100
-            Number of Boruta iterations (replaces n_trials from BorutaShap)
+            Maximum number of iterations
         percentile : int, default=100
-            Percentile for feature importance threshold
+            Percentile to use for determining importance threshold
         pvalue : float, default=0.05
-            P-value for feature selection significance
+            P-value threshold for feature selection
         verbose : int, default=2
-            Verbosity level (0=silent, 1=minimal, 2=full)
-        
-        Returns
-        -------
-        list
-            Selected feature column names
+            Verbosity level
             
-        Notes
-        -----
-        This uses the standard Boruta algorithm with permutation-based importance
-        from Random Forest, which is more stable than SHAP-based importance.
+        Returns:
+        --------
+        List[str] : Names of selected features
         """
-        if BorutaPy is None:
-            raise ImportError("boruta package not installed. Install with: pip install boruta")
-        
-        print(f"\n{'='*80}")
-        print(f"BORUTA FEATURE SELECTION")
-        print(f"{'='*80}")
-        print(f"Initial features: {X.shape[1]}")
-        print(f"Running Boruta with max_iter={max_iter}...")
-        print("WARNING: Time-series cross-validation (PGTS) not yet implemented")
-        print("         Feature selection may have data leakage risk")
-        
-        # Prepare data for Boruta
-        X_clean = X.copy()
-        y_clean = y.copy()
-        
-        # Remove NaN values
-        valid_idx = ~(X_clean.isna().any(axis=1) | y_clean.isna())
-        X_clean = X_clean[valid_idx]
-        y_clean = y_clean[valid_idx]
-        
-        print(f"Clean samples: {len(X_clean)}")
-        
+        from boruta import BorutaPy
         from sklearn.ensemble import RandomForestClassifier
         
-        # Create Random Forest estimator
+        print(f"\n{'='*80}")
+        print("BORUTA FEATURE SELECTION")
+        print(f"{'='*80}")
+        print(f"Initial features: {X.shape[1]}")
+        print(f"Samples: {X.shape[0]}")
+        print(f"Max iterations: {max_iter}")
+        
+        # Handle missing values
+        print("\nHandling missing values...")
+        valid_mask = ~(X.isna().any(axis=1) | y.isna())
+        X_clean = X.loc[valid_mask].copy()
+        y_clean = y.loc[valid_mask].copy()
+        
+        print(f"  Removed {(~valid_mask).sum()} samples with missing values")
+        print(f"  Clean dataset: {X_clean.shape[0]} samples, {X_clean.shape[1]} features")
+        
+        # Initialize Random Forest for Boruta
         rf = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=5,
+            n_estimators=100,
+            max_depth=7,
+            n_jobs=-1,
             random_state=self.random_seed,
-            n_jobs=-1
+            class_weight='balanced'
         )
         
         # Initialize Boruta
@@ -397,20 +385,44 @@ class KMRF:
         )
         
         print("Fitting Boruta...")
+        # Convert to numpy arrays - handle nullable integer types
+        X_array = X_clean.values
+        # Convert y_clean to numpy array, handling nullable integer types
+        if hasattr(y_clean, 'to_numpy'):
+            y_array = y_clean.to_numpy(dtype='int64', na_value=-999)
+        else:
+            y_array = y_clean.values.astype('int64')
+        
         # Fit Boruta (standard API: fit(X, y))
-        selector.fit(X_clean.values, y_clean.values)
+        selector.fit(X_array, y_array)
         
         # Get selected features using support_ attribute
         self.selected_features = X_clean.columns[selector.support_].tolist()
-        self.feature_selector = selector
         
         print(f"\n{'='*80}")
-        print(f"FEATURE SELECTION COMPLETE")
+        print("BORUTA RESULTS")
         print(f"{'='*80}")
         print(f"Selected features: {len(self.selected_features)}")
-        print(f"Tentative features: {selector.support_weak_.sum()}")
         print(f"Rejected features: {(~selector.support_).sum()}")
-        print(f"Reduction: {100 * (1 - len(self.selected_features) / X.shape[1]):.1f}%")
+        print(f"Tentative features: {selector.support_weak_.sum()}")
+        
+        if len(self.selected_features) > 0:
+            print(f"\nTop 20 selected features:")
+            # Get feature importances from the fitted estimator
+            feature_importances = selector.estimator.feature_importances_
+            selected_importances = [(feat, imp) for feat, imp, selected in 
+                                   zip(X_clean.columns, feature_importances, selector.support_) 
+                                   if selected]
+            selected_importances.sort(key=lambda x: x[1], reverse=True)
+            
+            for i, (feat, imp) in enumerate(selected_importances[:20], 1):
+                # Convert feature name to string in case it's a tuple
+                feat_str = str(feat) if not isinstance(feat, str) else feat
+                print(f"  {i:2d}. {feat_str:<50s} (importance: {imp:.6f})")
+        else:
+            print("\nWARNING: No features selected by Boruta!")
+            print("Using all features instead.")
+            self.selected_features = X_clean.columns.tolist()
         
         return self.selected_features
     
@@ -969,13 +981,13 @@ class KMRF:
         X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
                           for col in X.columns]
         
-        # y_flat = y.iloc[:, 0] if len(y.shape) > 1 else y
-        y_shifted = y.shift(-1)  # Shift labels to predict next period
+        y_flat = y.iloc[:, 0] if len(y.shape) > 1 else y
+        # y_shifted = y.shift(-1)  # Shift labels to predict next period
         
         # Remove NaN
-        valid_idx = ~(X_flat.isna().any(axis=1) | y_shifted.isna())
+        valid_idx = ~(X_flat.isna().any(axis=1) | y_flat.isna())
         X_clean = X_flat[valid_idx]
-        y_clean = y_shifted[valid_idx]
+        y_clean = y_flat[valid_idx]
         
         print(f"\nTraining samples: {len(X_clean)}")
         print(f"Features: {X_clean.shape[1]}")
@@ -1192,4 +1204,3 @@ class KMRF:
         print(f"  Features: {len(kmrf.selected_features) if kmrf.selected_features else 'all'}")
         
         return kmrf
-    

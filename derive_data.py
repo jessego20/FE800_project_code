@@ -13,8 +13,14 @@ class TimeSeriesDerivedFields:
         Initialize with price data
 
         Parameters:
-        price_data: DataFrame with columns ['open', 'high', 'low', 'close', 'volume']
+        price_data: DataFrame with columns ['open', 'high', 'low', 'close', 'volume', 'vwap']
         Index should be datetime
+        
+        Notes:
+        ------
+        - All raw price columns except 'open' are lagged by 1 day with '_lag1d' suffix
+        - Original 'open' column is kept unlagged (available at day t)
+        - Lagged columns: high_lag1d, low_lag1d, close_lag1d, volume_lag1d, vwap_lag1d
         """
         self.data = price_data.copy()
         self.data.index = pd.to_datetime(self.data.index)
@@ -33,183 +39,261 @@ class TimeSeriesDerivedFields:
                 # Try to convert strings with commas to numeric
                 self.data[col] = pd.to_numeric(self.data[col].astype(str).str.replace(',', ''), errors='coerce')
                 print(f"Converted column '{col}' from object to numeric")
+        
+        # Create lagged versions of raw price columns
+        # Keep original 'open' unlagged, lag all others
+        lagged_data = pd.DataFrame(index=self.data.index)
+        
+        # Keep original open (not lagged - available at day t)
+        if 'open' in self.data.columns:
+            lagged_data['open'] = self.data['open']
+        
+        # Lag all other columns by 1 day
+        columns_to_lag = ['open', 'high', 'low', 'close', 'volume', 'vwap']
+        for col in columns_to_lag:
+            if col in self.data.columns:
+                lagged_data[f'{col}_lag1d'] = self.data[col].shift(1)
+        
+        # Replace self.data with the new structure
+        self.data = lagged_data
     
     def compute_returns(self) -> pd.DataFrame:
         """
-        Compute various return measures using log returns only
+        Compute various return measures using log returns only.
+        Only overnight returns are NOT lagged (use only open price of day t).
+        All other returns are LAGGED by 1 day and have _lag1d suffix.
         """
         returns_data = pd.DataFrame(index=self.data.index)
         
-        # Log returns (single period)
-        returns_data['log_ret'] = np.log(self.data['close'] / self.data['close'].shift(1))
+        # Overnight returns (open t / close t-1) - NOT LAGGED (uses only day t open price)
+        # Note: close_lag1d already represents close at t-1
+        if 'open' in self.data.columns and 'close_lag1d' in self.data.columns:
+            returns_data['log_ret_overnight'] = np.log(self.data['open'] / self.data['close_lag1d'])
         
-        # Multi-period log returns
-        for period in [5, 10, 20, 60, 120, 252]:
-            returns_data[f'log_ret_{period}d'] = np.log(
-                self.data['close'] / self.data['close'].shift(period)
-            )
+        # Intraday returns (close t / open t) - LAGGED (uses close price of day t)
+        # Use close_lag1d (close at t-1) and open_lag1d (open at t-1)
+        if 'close_lag1d' in self.data.columns and 'open_lag1d' in self.data.columns:
+            log_ret_intraday = np.log(self.data['close_lag1d'] / self.data['open_lag1d'])
+            returns_data['log_ret_intraday_lag1d'] = log_ret_intraday
+        
+        # Standard log returns (close t / close t-1) - LAGGED
+        # At time t, we only know returns up to t-1
+        if 'close_lag1d' in self.data.columns:
+            log_ret = np.log(self.data['close_lag1d'] / self.data['close_lag1d'].shift(1))
+            returns_data['log_ret_lag1d'] = log_ret
+        
+            # Multi-period log returns - LAGGED
+            for period in [5, 10, 20, 60, 120, 252]:
+                multi_period_ret = np.log(self.data['close_lag1d'] / self.data['close_lag1d'].shift(period))
+                returns_data[f'log_ret_{period}d_lag1d'] = multi_period_ret
         
         return returns_data
     
     def compute_volatility(self, window_sizes: list = [20, 60, 120, 252]) -> pd.DataFrame:
         """
-        Compute various volatility measures
+        Compute various volatility measures.
+        All volatility measures are LAGGED by 1 day and have _lag1d suffix.
         """
         vol_data = pd.DataFrame(index=self.data.index)
         
-        # Get log returns only
-        log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
+        if 'close_lag1d' not in self.data.columns:
+            return vol_data
         
-        # Standard volatility (annualized) - using log returns
+        # Get log returns from lagged close
+        log_returns = np.log(self.data['close_lag1d'] / self.data['close_lag1d'].shift(1))
+        
+        # Standard volatility (annualized) - LAGGED
         for window in window_sizes:
-            vol_data[f'vol_{window}d'] = log_returns.rolling(window).std() * np.sqrt(252)
+            vol = log_returns.rolling(window).std() * np.sqrt(252)
+            vol_data[f'vol_{window}d_lag1d'] = vol
         
-        # Parkinson volatility (uses high/low)
-        if all(col in self.data.columns for col in ['high', 'low']):
+        # Parkinson volatility (uses high/low) - LAGGED
+        if all(col in self.data.columns for col in ['high_lag1d', 'low_lag1d']):
             for window in window_sizes:
                 parkinson_vol = np.sqrt(
                     (1 / (4 * np.log(2))) *
-                    (np.log(self.data['high'] / self.data['low']) ** 2).rolling(window).mean() * 252
+                    (np.log(self.data['high_lag1d'] / self.data['low_lag1d']) ** 2).rolling(window).mean() * 252
                 )
-                vol_data[f'parkinson_vol_{window}d'] = parkinson_vol
+                vol_data[f'parkinson_vol_{window}d_lag1d'] = parkinson_vol
         
-        # Garman-Klass volatility
-        if all(col in self.data.columns for col in ['open', 'high', 'low', 'close']):
+        # Garman-Klass volatility - LAGGED
+        if all(col in self.data.columns for col in ['open_lag1d', 'high_lag1d', 'low_lag1d', 'close_lag1d']):
             for window in window_sizes:
                 gk_vol = np.sqrt(
-                    (0.5 * (np.log(self.data['high'] / self.data['low']) ** 2) -
-                     (2 * np.log(2) - 1) * (np.log(self.data['close'] / self.data['open']) ** 2)
+                    (0.5 * (np.log(self.data['high_lag1d'] / self.data['low_lag1d']) ** 2) -
+                     (2 * np.log(2) - 1) * (np.log(self.data['close_lag1d'] / self.data['open_lag1d']) ** 2)
                     ).rolling(window).mean() * 252
                 )
-                vol_data[f'gk_vol_{window}d'] = gk_vol
+                vol_data[f'gk_vol_{window}d_lag1d'] = gk_vol
         
         return vol_data
     
     def compute_momentum(self, window_sizes: list = [10, 20, 60, 120, 252]) -> pd.DataFrame:
         """
-        Compute momentum indicators using log returns
+        Compute momentum indicators using log returns.
+        All momentum indicators are LAGGED by 1 day and have _lag1d suffix.
         """
         momentum_data = pd.DataFrame(index=self.data.index)
         
-        # Price momentum (log returns)
-        for window in window_sizes:
-            momentum_data[f'momentum_{window}d'] = np.log(
-                self.data['close'] / self.data['close'].shift(window)
-            )
+        if 'close_lag1d' not in self.data.columns:
+            return momentum_data
         
-        # EMA ratios (price/EMA)
+        # Price momentum (log returns) - LAGGED
         for window in window_sizes:
-            ema = self.data['close'].ewm(span=window).mean()
-            momentum_data[f'ema_ratio_{window}d'] = self.data['close'] / ema
+            momentum = np.log(self.data['close_lag1d'] / self.data['close_lag1d'].shift(window))
+            momentum_data[f'momentum_{window}d_lag1d'] = momentum
         
-        # RSI (Relative Strength Index) - using log returns
-        log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
+        # EMA ratios (price/EMA) - LAGGED
+        for window in window_sizes:
+            ema = self.data['close_lag1d'].ewm(span=window).mean()
+            ema_ratio = self.data['close_lag1d'] / ema
+            momentum_data[f'ema_ratio_{window}d_lag1d'] = ema_ratio
+        
+        # RSI (Relative Strength Index) - LAGGED
+        log_returns = np.log(self.data['close_lag1d'] / self.data['close_lag1d'].shift(1))
         for window in [14, 30]:
             gain = (log_returns.where(log_returns > 0, 0)).rolling(window=window).mean()
             loss = (-log_returns.where(log_returns < 0, 0)).rolling(window=window).mean()
             rs = gain / loss
-            momentum_data[f'rsi_{window}d'] = 100 - (100 / (1 + rs))
+            rsi = 100 - (100 / (1 + rs))
+            momentum_data[f'rsi_{window}d_lag1d'] = rsi
         
         return momentum_data
     
     def compute_technical_indicators(self) -> pd.DataFrame:
         """
-        Compute technical indicators commonly used in financial modeling
+        Compute technical indicators commonly used in financial modeling.
+        All technical indicators are LAGGED by 1 day and have _lag1d suffix.
         """
         tech_data = pd.DataFrame(index=self.data.index)
         
-        # EMA moving averages
+        if 'close_lag1d' not in self.data.columns:
+            return tech_data
+        
+        # EMA moving averages - LAGGED
         for window in [5, 10, 20, 50, 100, 200]:
-            tech_data[f'ema_{window}'] = self.data['close'].ewm(span=window).mean()
+            ema = self.data['close_lag1d'].ewm(span=window).mean()
+            tech_data[f'ema_{window}_lag1d'] = ema
         
-        # Bollinger Bands (20-day, 2 standard deviations) using EMA
-        ema_20 = self.data['close'].ewm(span=20).mean()
-        std_20 = self.data['close'].rolling(20).std()
-        tech_data['bb_upper'] = ema_20 + (2 * std_20)
-        tech_data['bb_lower'] = ema_20 - (2 * std_20)
-        tech_data['bb_width'] = (tech_data['bb_upper'] - tech_data['bb_lower']) / ema_20
-        tech_data['bb_position'] = (self.data['close'] - tech_data['bb_lower']) / (
-            tech_data['bb_upper'] - tech_data['bb_lower']
-        )
+        # Bollinger Bands (20-day, 2 standard deviations) using EMA - LAGGED
+        ema_20 = self.data['close_lag1d'].ewm(span=20).mean()
+        std_20 = self.data['close_lag1d'].rolling(20).std()
+        bb_upper = ema_20 + (2 * std_20)
+        bb_lower = ema_20 - (2 * std_20)
+        bb_width = (bb_upper - bb_lower) / ema_20
+        bb_position = (self.data['close_lag1d'] - bb_lower) / (bb_upper - bb_lower)
         
-        # MACD (12, 26, 9)
-        ema_12 = self.data['close'].ewm(span=12).mean()
-        ema_26 = self.data['close'].ewm(span=26).mean()
-        tech_data['macd'] = ema_12 - ema_26
-        tech_data['macd_signal'] = tech_data['macd'].ewm(span=9).mean()
-        tech_data['macd_histogram'] = tech_data['macd'] - tech_data['macd_signal']
+        tech_data['bb_upper_lag1d'] = bb_upper
+        tech_data['bb_lower_lag1d'] = bb_lower
+        tech_data['bb_width_lag1d'] = bb_width
+        tech_data['bb_position_lag1d'] = bb_position
+        
+        # MACD (12, 26, 9) - LAGGED
+        ema_12 = self.data['close_lag1d'].ewm(span=12).mean()
+        ema_26 = self.data['close_lag1d'].ewm(span=26).mean()
+        macd = ema_12 - ema_26
+        macd_signal = macd.ewm(span=9).mean()
+        macd_histogram = macd - macd_signal
+        
+        tech_data['macd_lag1d'] = macd
+        tech_data['macd_signal_lag1d'] = macd_signal
+        tech_data['macd_histogram_lag1d'] = macd_histogram
         
         return tech_data
     
     def compute_market_microstructure(self) -> pd.DataFrame:
         """
-        Compute market microstructure variables
+        Compute market microstructure variables.
+        All features are LAGGED by 1 day and have _lag1d suffix.
         """
         micro_data = pd.DataFrame(index=self.data.index)
         
-        if all(col in self.data.columns for col in ['high', 'low', 'close', 'open']):
-            # Price ranges
-            micro_data['daily_range'] = (self.data['high'] - self.data['low']) / self.data['close']
-            micro_data['open_to_close'] = (self.data['close'] - self.data['open']) / self.data['open']
+        if all(col in self.data.columns for col in ['high_lag1d', 'low_lag1d', 'close_lag1d', 'open_lag1d']):
+            # Intraday price ranges - LAGGED (use close price from day t)
+            daily_range = (self.data['high_lag1d'] - self.data['low_lag1d']) / self.data['close_lag1d']
+            open_to_close = (self.data['close_lag1d'] - self.data['open_lag1d']) / self.data['open_lag1d']
             
-            # True Range and Average True Range
-            prev_close = self.data['close'].shift(1)
+            micro_data['daily_range_lag1d'] = daily_range
+            micro_data['open_to_close_lag1d'] = open_to_close
+            
+            # True Range and Average True Range - LAGGED
+            prev_close = self.data['close_lag1d'].shift(1)
             true_range = np.maximum(
-                self.data['high'] - self.data['low'],
+                self.data['high_lag1d'] - self.data['low_lag1d'],
                 np.maximum(
-                    abs(self.data['high'] - prev_close),
-                    abs(self.data['low'] - prev_close)
+                    abs(self.data['high_lag1d'] - prev_close),
+                    abs(self.data['low_lag1d'] - prev_close)
                 )
             )
-            micro_data['true_range'] = true_range / self.data['close']
-            micro_data['atr_14'] = true_range.rolling(14).mean() / self.data['close']
+            tr_normalized = true_range / self.data['close_lag1d']
+            atr_14 = true_range.rolling(14).mean() / self.data['close_lag1d']
+            
+            micro_data['true_range_lag1d'] = tr_normalized
+            micro_data['atr_14_lag1d'] = atr_14
         
-        if 'volume' in self.data.columns:
-            # Volume indicators
-            micro_data['volume_ma_20'] = self.data['volume'].rolling(20).mean()
-            micro_data['volume_ratio'] = self.data['volume'] / micro_data['volume_ma_20']
+        if 'volume_lag1d' in self.data.columns:
+            # Volume indicators - LAGGED
+            volume_ma_20 = self.data['volume_lag1d'].rolling(20).mean()
+            volume_ratio = self.data['volume_lag1d'] / volume_ma_20
             
-            # Price-Volume indicators
-            micro_data['volume_weighted_price'] = (
-                (self.data['volume'] * self.data['close']).rolling(20).sum() /
-                self.data['volume'].rolling(20).sum()
-            )
+            micro_data['volume_ma_20_lag1d'] = volume_ma_20
+            micro_data['volume_ratio_lag1d'] = volume_ratio
             
-            # On-Balance Volume - using log returns
-            log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
-            obv = (log_returns.apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0) *
-                   self.data['volume']).cumsum()
-            micro_data['obv'] = obv
+            # Price-Volume indicators - LAGGED
+            if 'close_lag1d' in self.data.columns:
+                vwp = (
+                    (self.data['volume_lag1d'] * self.data['close_lag1d']).rolling(20).sum() /
+                    self.data['volume_lag1d'].rolling(20).sum()
+                )
+                micro_data['volume_weighted_price_lag1d'] = vwp
+                
+                # On-Balance Volume - LAGGED
+                log_returns = np.log(self.data['close_lag1d'] / self.data['close_lag1d'].shift(1))
+                obv = (log_returns.apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0) *
+                       self.data['volume_lag1d']).cumsum()
+                micro_data['obv_lag1d'] = obv
         
         return micro_data
     
     def compute_regime_variables(self, window_sizes: list = [20, 60, 120]) -> pd.DataFrame:
         """
-        Compute variables for regime identification using log returns
+        Compute variables for regime identification using log returns.
+        All regime variables are LAGGED by 1 day and have _lag1d suffix.
         """
         regime_data = pd.DataFrame(index=self.data.index)
         
-        log_returns = np.log(self.data['close'] / self.data['close'].shift(1))
+        if 'close_lag1d' not in self.data.columns:
+            return regime_data
         
-        # Rolling statistics
+        log_returns = np.log(self.data['close_lag1d'] / self.data['close_lag1d'].shift(1))
+        
+        # Rolling statistics - LAGGED
         for window in window_sizes:
-            regime_data[f'skew_{window}d'] = log_returns.rolling(window).skew()
-            regime_data[f'kurt_{window}d'] = log_returns.rolling(window).kurt()
-            regime_data[f'var_95_{window}d'] = log_returns.rolling(window).quantile(0.05)
-            regime_data[f'var_99_{window}d'] = log_returns.rolling(window).quantile(0.01)
+            skew = log_returns.rolling(window).skew()
+            kurt = log_returns.rolling(window).kurt()
+            var_95 = log_returns.rolling(window).quantile(0.05)
+            var_99 = log_returns.rolling(window).quantile(0.01)
+            
+            regime_data[f'skew_{window}d_lag1d'] = skew
+            regime_data[f'kurt_{window}d_lag1d'] = kurt
+            regime_data[f'var_95_{window}d_lag1d'] = var_95
+            regime_data[f'var_99_{window}d_lag1d'] = var_99
         
-        # Drawdown measures - using log returns
+        # Drawdown measures - LAGGED
         cumulative_returns = np.exp(log_returns.expanding().sum())
         running_max = cumulative_returns.expanding().max()
-        regime_data['drawdown'] = (cumulative_returns - running_max) / running_max
-        regime_data['max_drawdown_1y'] = regime_data['drawdown'].rolling(252).min()
+        drawdown = (cumulative_returns - running_max) / running_max
+        max_drawdown_1y = drawdown.rolling(252).min()
+        
+        regime_data['drawdown_lag1d'] = drawdown
+        regime_data['max_drawdown_1y_lag1d'] = max_drawdown_1y
         
         return regime_data
     
     def compute_tsfresh_features(self,
                                   columns: Optional[List[str]] = None,
                                   window_size: int = 20,
-                                  shift_periods: List[int] = [1]) -> pd.DataFrame:
+                                  shift_periods: List[int] = [0]) -> pd.DataFrame:
         """
         Compute tsfresh statistical features using MinimalFCParameters.
         
@@ -220,13 +304,14 @@ class TimeSeriesDerivedFields:
         Parameters:
         -----------
         columns : List[str], optional
-            List of column names to extract features from. If None, uses ['close', 'volume']
-            if available, otherwise just ['close']
+            List of column names to extract features from. If None, uses ['close_lag1d', 'volume_lag1d']
+            if available, otherwise just ['close_lag1d']
         window_size : int, default=20
             Size of the rolling window for feature extraction
-        shift_periods : List[int], default=[1]
-            List of periods to shift/lag the features by (e.g., [1, 5, 10] for 1-day,
-            5-day, and 10-day lagged features)
+        shift_periods : List[int], default=[0]
+            List of ADDITIONAL periods to shift/lag the features beyond the base lag.
+            Default [0] means no additional shifting (features already use _lag1d data).
+            Use [1, 5] for additional lags creating _lag2d, _lag6d versions.
         
         Returns:
         --------
@@ -237,15 +322,16 @@ class TimeSeriesDerivedFields:
         - Uses MinimalFCParameters() which includes ~20 basic statistical features
         - Features are computed on rolling windows to maintain time-series structure
         - Automatically handles missing values
-        - Column names will be prefixed with 'tsfresh_'
+        - Column names will be prefixed with 'tsfresh_' and suffixed with '_lag1d'
+        - Input columns should already be lagged (e.g., 'close_lag1d')
         """
         # Determine which columns to process
         if columns is None:
-            columns = ['close']
+            columns = ['close_lag1d']
             # Only add volume if it exists AND has non-NaN values
-            if 'volume' in self.data.columns:
-                if not self.data['volume'].isna().all():
-                    columns.append('volume')
+            if 'volume_lag1d' in self.data.columns:
+                if not self.data['volume_lag1d'].isna().all():
+                    columns.append('volume_lag1d')
                 else:
                     print("Volume column exists but contains only NaN values. Skipping volume features.")
         else:
@@ -349,7 +435,10 @@ class TimeSeriesDerivedFields:
         for shift in shift_periods:
             if shift > 0:
                 shifted = aligned_features.shift(shift)
-                shifted.columns = [f'{col}_lag{shift}' for col in aligned_features.columns]
+                # Calculate total lag (base lag from input data + additional shift)
+                # Since input is already _lag1d, shift of 1 means total lag of 2 days
+                total_lag = shift + 1
+                shifted.columns = [col.replace('_lag1d', f'_lag{total_lag}d') for col in aligned_features.columns]
                 all_features.append(shifted)
         
         # Combine all features
@@ -370,7 +459,7 @@ class TimeSeriesDerivedFields:
             Whether to include tsfresh statistical features
         tsfresh_params : Dict, optional
             Parameters to pass to compute_tsfresh_features().
-            Defaults to {'window_size': 20, 'shift_periods': [1]}
+            Defaults to {'window_size': 20, 'shift_periods': [0]}
         
         Returns:
         --------
@@ -400,7 +489,7 @@ class TimeSeriesDerivedFields:
         if include_tsfresh:
             # print("Computing tsfresh features...")
             if tsfresh_params is None:
-                tsfresh_params = {'window_size': 20, 'shift_periods': [1]}
+                tsfresh_params = {'window_size': 20, 'shift_periods': [0]}
             all_fields.append(self.compute_tsfresh_features(**tsfresh_params))
         
         # Combine all DataFrames
