@@ -1,0 +1,191 @@
+{
+  "SPDR S&P 500 ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_SPDR-S&P-500-ETF_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 6041,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 112.192873,
+    "timestamp": "2025-11-04T18:30:36.185242"
+  },
+  "Vanguard S&P 500 ETF": {
+    "status": "failed",
+    "error": "Asset 'Vanguard S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_6101/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'Vanguard S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
+    "duration_seconds": 1.317864,
+    "timestamp": "2025-11-04T18:30:37.505476"
+  },
+  "iShares Core S&P 500 ETF": {
+    "status": "failed",
+    "error": "Asset 'iShares Core S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_6101/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'iShares Core S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
+    "duration_seconds": 1.27282,
+    "timestamp": "2025-11-04T18:30:38.781463"
+  },
+  "Invesco QQQ Trust": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Invesco-QQQ-Trust_20190101_boruta.pkl",
+    "n_features": 109,
+    "n_selected_features": 109,
+    "n_train_samples": 4985,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 62.332291,
+    "timestamp": "2025-11-04T18:31:41.116282"
+  },
+  "iShares Russell 2000 ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_iShares-Russell-2000-ETF_20190101_boruta.pkl",
+    "n_features": 108,
+    "n_selected_features": 108,
+    "n_train_samples": 4677,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 75.486131,
+    "timestamp": "2025-11-04T18:32:56.602514"
+  },
+  "Vanguard Total Stock Market ETF": {
+    "status": "failed",
+    "error": "Asset 'Vanguard Total Stock Market ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_6101/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'Vanguard Total Stock Market ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
+    "duration_seconds": 1.360184,
+    "timestamp": "2025-11-04T18:32:57.964097"
+  },
+  "Energy Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Energy-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 108,
+    "n_selected_features": 108,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 102.912446,
+    "timestamp": "2025-11-04T18:34:40.879555"
+  },
+  "Financial Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Financial-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 67.140348,
+    "timestamp": "2025-11-04T18:35:48.020003"
+  },
+  "Utilities Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Utilities-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 102.977399,
+    "timestamp": "2025-11-04T18:37:30.997506"
+  },
+  "Industrial Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Industrial-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 103.413999,
+    "timestamp": "2025-11-04T18:39:14.411591"
+  },
+  "Health Care Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Health-Care-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 109,
+    "n_selected_features": 109,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 36.369082,
+    "timestamp": "2025-11-04T18:39:50.780769"
+  },
+  "Technology Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Technology-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 92.221156,
+    "timestamp": "2025-11-04T18:41:23.002038"
+  },
+  "Materials Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Materials-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 95.40705,
+    "timestamp": "2025-11-04T18:42:58.409198"
+  },
+  "Consumer Discretionary Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Consumer-Discretionary-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 109,
+    "n_selected_features": 109,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 87.315533,
+    "timestamp": "2025-11-04T18:44:25.724833"
+  },
+  "Consumer Staples Select Sector SPDR": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_Consumer-Staples-Select-Sector-SPDR_20190101_boruta.pkl",
+    "n_features": 110,
+    "n_selected_features": 110,
+    "n_train_samples": 5037,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 54.053019,
+    "timestamp": "2025-11-04T18:45:19.777951"
+  },
+  "iShares S&P 500 Growth ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_iShares-S&P-500-Growth-ETF_20190101_boruta.pkl",
+    "n_features": 105,
+    "n_selected_features": 105,
+    "n_train_samples": 4677,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 74.174998,
+    "timestamp": "2025-11-04T18:46:33.953042"
+  },
+  "iShares S&P 500 Value ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/us_equity/KMRF_iShares-S&P-500-Value-ETF_20190101_boruta.pkl",
+    "n_features": 106,
+    "n_selected_features": 106,
+    "n_train_samples": 4677,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 89.156703,
+    "timestamp": "2025-11-04T18:48:03.109880"
+  },
+  "iShares Russell 1000 Growth ETF": {
+    "status": "failed",
+    "error": "Asset 'iShares Russell 1000 Growth ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_6101/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'iShares Russell 1000 Growth ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
+    "duration_seconds": 1.41711,
+    "timestamp": "2025-11-04T18:48:04.528467"
+  },
+  "iShares Russell 1000 Value ETF": {
+    "status": "failed",
+    "error": "Asset 'iShares Russell 1000 Value ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_6101/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'iShares Russell 1000 Value ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
+    "duration_seconds": 1.57279,
+    "timestamp": "2025-11-04T18:48:06.105490"
+  }
+}
