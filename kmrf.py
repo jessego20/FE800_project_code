@@ -128,14 +128,11 @@ class KMRF:
                 data_path_map = {
                     'us_equity': 'data/ready/us_equity.csv',
                     'commodity': 'data/ready/commodity.csv',
-                    'int_equity': 'data/ready/int_equity.csv'
+                    'int_equity': 'data/ready/int_equity.csv',
+                    'us_treasury': 'data/ready/us_treasury.csv'
                 }
             else:
-                data_path_map = {
-                    'us_equity': 'data/processed/us_equity_all_data.csv',
-                    'commodity': 'data/processed/commodity_data.csv',
-                    'int_equity': 'data/processed/us_equity_all_data.csv'
-                }
+                raise NotImplementedError("Only implemented to use pre-computed 'ready' data")
             self.data_path = Path(data_path_map.get(asset_class, ''))
         else:
             self.data_path = Path(data_path)
