@@ -1,0 +1,112 @@
+{
+  "Gold Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Gold-Futures_20190101_boruta.pkl",
+    "n_features": 14,
+    "n_selected_features": 14,
+    "n_train_samples": 6092,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 29.461853,
+    "timestamp": "2025-11-05T12:54:50.859476"
+  },
+  "Wheat Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Wheat-Futures_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6052,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 32.790618,
+    "timestamp": "2025-11-05T12:55:23.650152"
+  },
+  "Corn Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Corn-Futures_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6028,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 59.527816,
+    "timestamp": "2025-11-05T12:56:23.178033"
+  },
+  "Copper": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Copper_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6094,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 64.801258,
+    "timestamp": "2025-11-05T12:57:27.979354"
+  },
+  "Sugar": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Sugar_20190101_boruta.pkl",
+    "n_features": 55,
+    "n_selected_features": 55,
+    "n_train_samples": 6011,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 62.589666,
+    "timestamp": "2025-11-05T12:58:30.569076"
+  },
+  "Soybean Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Soybean-Futures_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6049,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 48.133185,
+    "timestamp": "2025-11-05T12:59:18.702331"
+  },
+  "Live Cattle Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Live-Cattle-Futures_20190101_boruta.pkl",
+    "n_features": 82,
+    "n_selected_features": 82,
+    "n_train_samples": 6958,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 14.224932,
+    "timestamp": "2025-11-05T12:59:32.927351"
+  },
+  "Natural Gas": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Natural-Gas_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 4708,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 9.051287,
+    "timestamp": "2025-11-05T12:59:41.978716"
+  },
+  "Coffee": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Coffee_20190101_boruta.pkl",
+    "n_features": 47,
+    "n_selected_features": 47,
+    "n_train_samples": 6009,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 64.695295,
+    "timestamp": "2025-11-05T13:00:46.674074"
+  },
+  "Brent Crude Oil": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/commodity/KMRF_Brent-Crude-Oil_20190101_boruta.pkl",
+    "n_features": 47,
+    "n_selected_features": 47,
+    "n_train_samples": 3230,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 36.926979,
+    "timestamp": "2025-11-05T13:01:23.601144"
+  }
+}

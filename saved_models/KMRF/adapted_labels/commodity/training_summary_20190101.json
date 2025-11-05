@@ -1,0 +1,123 @@
+{
+  "Aluminum Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Aluminum-Futures_20190101_boruta.pkl",
+    "n_features": 53,
+    "n_selected_features": 53,
+    "n_train_samples": 1170,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 22.198567,
+    "timestamp": "2025-11-05T12:13:23.835854"
+  },
+  "Gold Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Gold-Futures_20190101_boruta.pkl",
+    "n_features": 53,
+    "n_selected_features": 53,
+    "n_train_samples": 6092,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 67.591788,
+    "timestamp": "2025-11-05T12:14:31.428011"
+  },
+  "Wheat Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Wheat-Futures_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6052,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 19.123833,
+    "timestamp": "2025-11-05T12:14:50.551967"
+  },
+  "Corn Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Corn-Futures_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6028,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 12.182997,
+    "timestamp": "2025-11-05T12:15:02.735371"
+  },
+  "Copper": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Copper_20190101_boruta.pkl",
+    "n_features": 56,
+    "n_selected_features": 56,
+    "n_train_samples": 6094,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 71.477809,
+    "timestamp": "2025-11-05T12:16:14.213602"
+  },
+  "Sugar": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Sugar_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6011,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 68.011874,
+    "timestamp": "2025-11-05T12:17:22.225583"
+  },
+  "Soybean Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Soybean-Futures_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 6049,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 13.010097,
+    "timestamp": "2025-11-05T12:17:35.235748"
+  },
+  "Live Cattle Futures": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Live-Cattle-Futures_20190101_boruta.pkl",
+    "n_features": 84,
+    "n_selected_features": 84,
+    "n_train_samples": 6958,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 132.063325,
+    "timestamp": "2025-11-05T12:19:47.299138"
+  },
+  "Natural Gas": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Natural-Gas_20190101_boruta.pkl",
+    "n_features": 58,
+    "n_selected_features": 58,
+    "n_train_samples": 4708,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 49.467337,
+    "timestamp": "2025-11-05T12:20:36.766530"
+  },
+  "Coffee": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Coffee_20190101_boruta.pkl",
+    "n_features": 56,
+    "n_selected_features": 56,
+    "n_train_samples": 6009,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 21.067527,
+    "timestamp": "2025-11-05T12:20:57.834118"
+  },
+  "Brent Crude Oil": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Brent-Crude-Oil_20190101_boruta.pkl",
+    "n_features": 54,
+    "n_selected_features": 54,
+    "n_train_samples": 3230,
+    "n_test_samples": 1738,
+    "boruta_used": true,
+    "duration_seconds": 32.642,
+    "timestamp": "2025-11-05T12:21:30.476182"
+  }
+}
