@@ -1,15 +1,4 @@
 {
-  "Aluminum Futures": {
-    "status": "success",
-    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Aluminum-Futures_20190101_boruta.pkl",
-    "n_features": 53,
-    "n_selected_features": 53,
-    "n_train_samples": 1170,
-    "n_test_samples": 1738,
-    "boruta_used": true,
-    "duration_seconds": 22.198567,
-    "timestamp": "2025-11-05T12:13:23.835854"
-  },
   "Gold Futures": {
     "status": "success",
     "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Gold-Futures_20190101_boruta.pkl",
@@ -18,8 +7,8 @@
     "n_train_samples": 6092,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 67.591788,
-    "timestamp": "2025-11-05T12:14:31.428011"
+    "duration_seconds": 62.429759,
+    "timestamp": "2025-11-05T13:06:54.976188"
   },
   "Wheat Futures": {
     "status": "success",
@@ -29,8 +18,8 @@
     "n_train_samples": 6052,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 19.123833,
-    "timestamp": "2025-11-05T12:14:50.551967"
+    "duration_seconds": 16.438903,
+    "timestamp": "2025-11-05T13:07:11.415165"
   },
   "Corn Futures": {
     "status": "success",
@@ -40,8 +29,8 @@
     "n_train_samples": 6028,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 12.182997,
-    "timestamp": "2025-11-05T12:15:02.735371"
+    "duration_seconds": 10.900384,
+    "timestamp": "2025-11-05T13:07:22.315621"
   },
   "Copper": {
     "status": "success",
@@ -51,8 +40,8 @@
     "n_train_samples": 6094,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 71.477809,
-    "timestamp": "2025-11-05T12:16:14.213602"
+    "duration_seconds": 61.912728,
+    "timestamp": "2025-11-05T13:08:24.228471"
   },
   "Sugar": {
     "status": "success",
@@ -62,8 +51,8 @@
     "n_train_samples": 6011,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 68.011874,
-    "timestamp": "2025-11-05T12:17:22.225583"
+    "duration_seconds": 61.82443,
+    "timestamp": "2025-11-05T13:09:26.053012"
   },
   "Soybean Futures": {
     "status": "success",
@@ -73,8 +62,8 @@
     "n_train_samples": 6049,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 13.010097,
-    "timestamp": "2025-11-05T12:17:35.235748"
+    "duration_seconds": 12.972143,
+    "timestamp": "2025-11-05T13:09:39.025226"
   },
   "Live Cattle Futures": {
     "status": "success",
@@ -84,8 +73,8 @@
     "n_train_samples": 6958,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 132.063325,
-    "timestamp": "2025-11-05T12:19:47.299138"
+    "duration_seconds": 79.990971,
+    "timestamp": "2025-11-05T13:10:59.016336"
   },
   "Natural Gas": {
     "status": "success",
@@ -95,8 +84,8 @@
     "n_train_samples": 4708,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 49.467337,
-    "timestamp": "2025-11-05T12:20:36.766530"
+    "duration_seconds": 30.406817,
+    "timestamp": "2025-11-05T13:11:29.423232"
   },
   "Coffee": {
     "status": "success",
@@ -106,8 +95,8 @@
     "n_train_samples": 6009,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 21.067527,
-    "timestamp": "2025-11-05T12:20:57.834118"
+    "duration_seconds": 20.225995,
+    "timestamp": "2025-11-05T13:11:49.649290"
   },
   "Brent Crude Oil": {
     "status": "success",
@@ -117,7 +106,7 @@
     "n_train_samples": 3230,
     "n_test_samples": 1738,
     "boruta_used": true,
-    "duration_seconds": 32.642,
-    "timestamp": "2025-11-05T12:21:30.476182"
+    "duration_seconds": 33.093372,
+    "timestamp": "2025-11-05T13:12:22.742762"
   }
 }

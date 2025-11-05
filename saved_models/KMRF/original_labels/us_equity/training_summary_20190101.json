@@ -10,20 +10,6 @@
     "duration_seconds": 397.735409,
     "timestamp": "2025-11-04T15:04:21.123436"
   },
-  "Vanguard S&P 500 ETF": {
-    "status": "failed",
-    "error": "Asset 'Vanguard S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
-    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_42532/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'Vanguard S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
-    "duration_seconds": 2.623313,
-    "timestamp": "2025-11-04T15:04:23.865204"
-  },
-  "iShares Core S&P 500 ETF": {
-    "status": "failed",
-    "error": "Asset 'iShares Core S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
-    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_42532/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'iShares Core S&P 500 ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
-    "duration_seconds": 1.806137,
-    "timestamp": "2025-11-04T15:04:25.678859"
-  },
   "Invesco QQQ Trust": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Invesco-QQQ-Trust_20190101_boruta.pkl",
@@ -45,13 +31,6 @@
     "boruta_used": true,
     "duration_seconds": 315.77603,
     "timestamp": "2025-11-04T15:15:40.131007"
-  },
-  "Vanguard Total Stock Market ETF": {
-    "status": "failed",
-    "error": "Asset 'Vanguard Total Stock Market ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
-    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_42532/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'Vanguard Total Stock Market ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
-    "duration_seconds": 2.880167,
-    "timestamp": "2025-11-04T15:15:43.019656"
   },
   "Energy Select Sector SPDR": {
     "status": "success",
@@ -174,18 +153,48 @@
     "duration_seconds": 185.796314,
     "timestamp": "2025-11-04T16:05:05.224341"
   },
-  "iShares Russell 1000 Growth ETF": {
-    "status": "failed",
-    "error": "Asset 'iShares Russell 1000 Growth ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
-    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_42532/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'iShares Russell 1000 Growth ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
-    "duration_seconds": 2.887843,
-    "timestamp": "2025-11-04T16:05:08.124535"
+  "iShares Russell 2000 Growth ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Russell-2000-Growth-ETF_20190101_boruta.pkl",
+    "n_features": 104,
+    "n_selected_features": 104,
+    "n_train_samples": 4634,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 99.777911,
+    "timestamp": "2025-11-05T13:48:33.203288"
   },
-  "iShares Russell 1000 Value ETF": {
-    "status": "failed",
-    "error": "Asset 'iShares Russell 1000 Value ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...",
-    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_42532/2053907266.py\", line 106, in train_kmrf_batch\n    data = model.load_data()\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 203, in load_data\n    raise ValueError(\n    ...<2 lines>...\n    )\nValueError: Asset 'iShares Russell 1000 Value ETF' not found in data. Available assets: SPDR S&P 500 ETF, Invesco S&P 500 Equal Weight ETF, Fidelity Nasdaq Composite Index ETF, Invesco QQQ Trust, iShares Russell 2000 ETF, SPDR Dow Jones Industrial Average ETF, Energy Select Sector SPDR, Financial Select Sector SPDR, Utilities Select Sector SPDR, Industrial Select Sector SPDR...\n",
-    "duration_seconds": 1.811582,
-    "timestamp": "2025-11-04T16:05:09.940347"
+  "iShares Russell 2000 Value ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Russell-2000-Value-ETF_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 4634,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 94.721978,
+    "timestamp": "2025-11-05T13:50:07.925422"
+  },
+  "iShares Russell Mid-Cap ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Russell-Mid-Cap-ETF_20190101_boruta.pkl",
+    "n_features": 107,
+    "n_selected_features": 107,
+    "n_train_samples": 4388,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 59.790069,
+    "timestamp": "2025-11-05T13:51:07.715598"
+  },
+  "iShares Micro-Cap ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Micro-Cap-ETF_20190101_boruta.pkl",
+    "n_features": 104,
+    "n_selected_features": 104,
+    "n_train_samples": 3366,
+    "n_test_samples": 1463,
+    "boruta_used": true,
+    "duration_seconds": 67.89994,
+    "timestamp": "2025-11-05T13:52:15.615651"
   }
 }
