@@ -107,7 +107,7 @@ class KMRF:
         self.end_date = end_date
         self.random_seed = random_seed
         self.use_ready_data = use_ready_data
-        
+
         # Data split dates
         self.validation_start = pd.to_datetime(validation_start)
         self.validation_end = pd.to_datetime(validation_end)
@@ -176,7 +176,132 @@ class KMRF:
         print(f"  Validation period: {validation_start} to {validation_end}")
         print(f"  Test start: {test_start}")
         print(f"  Random seed: {self.random_seed}")
-    
+
+    def set_raw_data(self, data: Optional[pd.DataFrame] = None):
+        if data is not None:
+            self.raw_data = data
+        else:
+            us_equity_symbol_names = {
+                # BOND ETFS
+                'BIL': 'SPDR Bloomberg 1-3 Month T-Bill ETF',
+                'SHY': 'iShares 1-3 Year Treasury Bond ETF',
+                'IEF': 'iShares 7-10 Year Treasury Bond ETF',
+                # MAJOR INDICES
+                '^GSPC': 'S&P 500',
+                '^IXIC': 'Nasdaq Composite',
+                '^NDX': 'Nasdaq 100',
+                '^RUT': 'Russell 2000',
+                '^DJI': 'Dow Jones Industrial Average',
+                '^RUI': 'Russell 1000',
+                '^RUA': 'Russell 3000',
+                
+                # MAIN BROAD MARKET ETFS
+                'SPY': 'SPDR S&P 500 ETF',
+                'VOO': 'Vanguard S&P 500 ETF',
+                'RSP': 'Invesco S&P 500 Equal Weight ETF',
+                'IVV': 'iShares Core S&P 500 ETF',
+                'QQQ': 'Invesco QQQ Trust',
+                'QQQM': 'Invesco Nasdaq 100 ETF',
+                'ONEQ': 'Fidelity Nasdaq Composite Index ETF',
+                'IWM': 'iShares Russell 2000 ETF',
+                'IWB': 'iShares Russell 1000 ETF',
+                'IWV': 'iShares Russell 3000 ETF',
+                'DIA': 'SPDR Dow Jones Industrial Average ETF',
+                'VTI': 'Vanguard Total Stock Market ETF',
+                
+                # S&P 500 SECTOR ETFS (SELECT SECTOR SPDRS)
+                'XLE': 'Energy Select Sector SPDR',
+                'XLF': 'Financial Select Sector SPDR',
+                'XLU': 'Utilities Select Sector SPDR',
+                'XLI': 'Industrial Select Sector SPDR',
+                'XLV': 'Health Care Select Sector SPDR',
+                'XLK': 'Technology Select Sector SPDR',
+                'XLB': 'Materials Select Sector SPDR',
+                'XLY': 'Consumer Discretionary Select Sector SPDR',
+                'XLP': 'Consumer Staples Select Sector SPDR',
+                'XLRE': 'Real Estate Select Sector SPDR',
+                'XLC': 'Communication Services Select Sector SPDR',
+                
+                # GROWTH ETFs
+                'IVW': 'iShares S&P 500 Growth ETF',
+                'VONG': 'Vanguard Russell 1000 Growth ETF',
+                'IWF': 'iShares Russell 1000 Growth ETF',
+                'IWO': 'iShares Russell 2000 Growth ETF',
+                'VUG': 'Vanguard Growth ETF',
+                'SPYG': 'SPDR Portfolio S&P 500 Growth ETF',
+                
+                # VALUE ETFs
+                'IVE': 'iShares S&P 500 Value ETF',
+                'VONV': 'Vanguard Russell 1000 Value ETF',
+                'IWD': 'iShares Russell 1000 Value ETF',
+                'IWN': 'iShares Russell 2000 Value ETF',
+                'VTV': 'Vanguard Value ETF',
+                'SPYV': 'SPDR Portfolio S&P 500 Value ETF',
+                
+                # SIZE ETFs
+                'IWR': 'iShares Russell Mid-Cap ETF',
+                'IWC': 'iShares Micro-Cap ETF',
+                'IJH': 'iShares Core S&P Mid-Cap ETF',
+                'IJR': 'iShares Core S&P Small-Cap ETF',
+                'MDY': 'SPDR S&P MidCap 400 ETF',
+                'SLY': 'SPDR S&P 600 Small Cap ETF',
+                'VO': 'Vanguard Mid-Cap ETF',
+                'VB': 'Vanguard Small-Cap ETF',
+                'SCHA': 'Schwab U.S. Small-Cap ETF',
+                'SCHM': 'Schwab U.S. Mid-Cap ETF',
+                'VTWO': 'Vanguard Russell 2000 ETF',
+                'VTHR': 'Vanguard Russell 3000 ETF',
+                'THRK': 'iShares Russell 3000 ETF',
+                'SPSM': 'SPDR Portfolio S&P 600 Small Cap ETF',
+                'SMLF': 'iShares Small-Cap US Equity Factor ETF',
+                
+                # NASDAQ SPECIFIC
+                'QTEC': 'First Trust Nasdaq-100 Technology Sector Index Fund',
+                'QQEW': 'First Trust Nasdaq-100 Equal Weighted Index Fund',
+                'QQQG': 'Pacer Nasdaq 100 Top 50 Cash Cows Dividend Growth ETF',
+                'QQQV': 'Pacer Nasdaq 100 Top 50 Value ETF',
+                
+                # DIVIDEND/QUALITY
+                'SCHD': 'Schwab U.S. Dividend Equity ETF',
+                'VYM': 'Vanguard High Dividend Yield ETF',
+                'DVY': 'iShares Select Dividend ETF',
+                'QUAL': 'iShares MSCI USA Quality Factor ETF',
+                'USMV': 'iShares MSCI USA Min Vol Factor ETF',
+                
+                # EQUAL WEIGHT
+                'EWSC': 'Invesco S&P SmallCap 600 Equal Weight ETF',
+                'EWMC': 'Invesco S&P MidCap 400 Equal Weight ETF',
+            }
+            int_equity_symbol_names = {
+                'VXUS': 'Vanguard Total International Stock ETF',
+                'VEA': 'Vanguard FTSE Developed Markets ETF',
+                'VWO': 'Vanguard FTSE Emerging Markets ETF',
+                'VGK': 'Vanguard FTSE Europe ETF',
+                'VPL': 'Vanguard FTSE Pacific ETF',
+                'FXI': 'iShares China Large-Cap ETF',
+                'EWJ': 'iShares MSCI Japan ETF',
+                'INDA': 'iShares MSCI India ETF',
+            }
+            etf_symbol_name_dict = {**us_equity_symbol_names, **int_equity_symbol_names}
+
+            fmp_comm = pd.read_csv('data/inputs/fmp_commodity_list.csv')
+            comm_symbol_name_dict = fmp_comm.set_index('symbol')['name'].to_dict()
+            comm_symbol_name_dict.update({'Nickel': 'Nickel'})
+
+            if self.asset_class != 'commodity':
+                raw_price_data = pd.read_csv('data/processed/us_equity_all_data.csv', index_col=0, header=[0, 1], parse_dates=True)
+                raw_price_data.index = pd.to_datetime(raw_price_data.index)
+                raw_price_data.rename(columns=etf_symbol_name_dict, level=0, inplace=True)
+            else:
+                raw_price_data = pd.read_csv('data/processed/commodity_data.csv', index_col=0, header=[0, 1], parse_dates=True)
+                raw_price_data.index = pd.to_datetime(raw_price_data.index)
+                raw_price_data.rename(columns=comm_symbol_name_dict, level=0, inplace=True)
+
+            self.raw_data = raw_price_data[[(self.asset_name, 'open'), 
+                                            (self.asset_name, 'high'), 
+                                            (self.asset_name, 'low'), 
+                                            (self.asset_name, 'close')]].dropna(how='all')
+
     def load_data(self, rename_map: Optional[Dict] = None) -> pd.DataFrame:
         """Load data for the specific asset."""
         if not self.data_path.exists():
@@ -750,7 +875,10 @@ class KMRF:
         common_train_idx = X_train_dates.index.intersection(y.index)
         self.X_train = X_train_dates.loc[common_train_idx]
         self.y_train = y.loc[common_train_idx]
-        
+        # push train start date forward 252d to make sure all features are valid - i.e. start at 253rd day
+        self.X_train = self.X_train.iloc[252:]
+        self.y_train = self.y_train.loc[self.X_train.index]
+
         # Validation: Features only (from full feature set X)
         self.X_val = X[val_mask].copy()
         self.y_val = None
@@ -823,33 +951,55 @@ class KMRF:
         print(f"{'='*80}")
         print(f"\nNote: Validation and test sets have features only.")
         print(f"      Use trained model to generate predictions on these sets.")
-    
+
+    def adjust_train_val_test_dates(self, 
+                              val_start: pd.Timestamp | str, 
+                              val_end: pd.Timestamp | str, 
+                              test_start: pd.Timestamp | str, 
+                              test_end: pd.Timestamp | str) -> None:
+        if self.X_train is None:
+            raise ValueError("Training data not available. Cannot adjust validation/test dates.")
+
+        # print(self.X_train.first_valid_index() - self.raw_data.first_valid_index())
+        if self.X_train.first_valid_index() - self.raw_data.first_valid_index() < pd.Timedelta(days=360):
+            # Training data does not have sufficient lookback period for complete feature computation
+            self.X_train = self.X_train.iloc[252:]
+            self.y_train = self.y_train.loc[self.X_train.index]
+            print(f"\nADJUSTED TRAINING DATA FORWARD 1 YEAR TO ENSURE COMPLETE FEATURE COMPUTATION\nMUST RETRAIN MODEL")
+
+        X_val_plus_test = pd.concat([self.X_val, self.X_test], axis=0)
+
+        new_X_val = X_val_plus_test.loc[val_start:val_end]
+        new_X_test = X_val_plus_test.loc[test_start:test_end]
+        self.X_val = new_X_val
+        self.X_test = new_X_test
+
     def __repr__(self) -> str:
         """String representation of the KMRF model."""
-        status = [f"KMRF('{self.asset_name}', {self.asset_class})"]
+        status = [f"KMRF('{self.asset_class}, {self.asset_name}')"]
         
         if self.raw_data is not None:
-            status.append(f"Data: {self.raw_data.shape}")
+            status.append(f"Raw Price Data {self.raw_data.shape}: {self.raw_data.index[0].date()} to {self.raw_data.index[-1].date()}")
         
-        if self.features is not None:
-            status.append(f"Features: {self.features.shape}")
+        # if self.features is not None:
+        #     status.append(f"Features: {self.features.shape}")
         
-        if self.labels is not None:
-            status.append(f"4-Regime Labels: ({len(self.labels)},)")
+        # if self.labels is not None:
+        #     status.append(f"4-Regime Labels: ({len(self.labels)},)")
         
-        if self.adapted_labels is not None:
-            status.append(f"3-Class Labels: ({len(self.adapted_labels)},)")
+        # if self.adapted_labels is not None:
+        #     status.append(f"3-Class Labels: ({len(self.adapted_labels)},)")
         
         if self.X_train is not None:
-            status.append(f"Train: {self.X_train.shape}")
+            status.append(f"Train {self.X_train.shape}: {self.X_train.index[0].date()} to {self.X_train.index[-1].date()}")
         
         if self.X_val is not None:
-            status.append(f"Val: {self.X_val.shape}")
+            status.append(f"Val {self.X_val.shape}: {self.X_val.index[0].date()} to {self.X_val.index[-1].date()}")
         
         if self.X_test is not None:
-            status.append(f"Test: {self.X_test.shape}")
+            status.append(f"Test {self.X_test.shape}: {self.X_test.index[0].date()} to {self.X_test.index[-1].date()}")
         
-        return " | ".join(status)
+        return "\n".join(status)
     
     def get_split_info(self) -> dict:
         """
@@ -934,7 +1084,9 @@ class KMRF:
         from sklearn.ensemble import RandomForestClassifier
         
         if X is None or y is None:
-            raise ValueError("Features and labels required. Call prepare_training_data() first.")
+            # raise ValueError("Features and labels required. Call prepare_training_data() first.")
+            X = self.X_train
+            y = self.y_train
         
         print(f"\n{'='*80}")
         print(f"TRAINING RANDOM FOREST CLASSIFIER")
@@ -1005,6 +1157,7 @@ class KMRF:
     def predict(
         self,
         X: Optional[pd.DataFrame] = None,
+        test_or_val: str = 'test',
         return_proba: bool = True
     ) -> Union[pd.DataFrame, np.ndarray]:
         """
@@ -1043,10 +1196,10 @@ class KMRF:
             raise ValueError("Model not trained. Call fit() first or load a saved model.")
         
         if X is None:
-            if self.X_test is None:
-                raise ValueError("No test data available. Either provide X or run prepare_training_data() with split_data=True.")
-            X = self.X_test
-        
+            if self.X_test is None and self.X_val is None:
+                raise ValueError("No test or validation data available. Either provide X or run prepare_training_data() with split_data=True.")
+            X = self.X_test if test_or_val.lower() == 'test' else self.X_val
+
         print(f"\nGenerating predictions...")
         print(f"  Input shape: {X.shape}")
         
@@ -1170,6 +1323,7 @@ class KMRF:
             'validation_end': self.validation_end,
             'test_start': self.test_start,
             # Save train/val/test splits
+            'raw_data': self.raw_data,
             'X_train': self.X_train,
             'y_train': self.y_train,
             'X_val': self.X_val,
@@ -1194,7 +1348,7 @@ class KMRF:
         return model_path
     
     @classmethod
-    def load_model(cls, model_path: Union[str, Path], use_ready_data: bool = True) -> 'KMRF':
+    def load_model(cls, model_path: Union[str, Path], use_ready_data: bool = True, verbose: bool = False) -> 'KMRF':
         """
         Load a saved KMRF model.
         
@@ -1235,11 +1389,12 @@ class KMRF:
         if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
-        print(f"\n{'='*80}")
-        print(f"LOADING SAVED KMRF MODEL")
-        print(f"{'='*80}")
-        print(f"Model path: {model_path}")
-        
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"LOADING SAVED KMRF MODEL")
+            print(f"{'='*80}")
+            print(f"Model path: {model_path}")
+
         with open(model_path, 'rb') as f:
             model_data = pickle.load(f)
         
@@ -1261,6 +1416,7 @@ class KMRF:
         kmrf.selected_features = model_data['selected_features']
         
         # Restore train/val/test splits
+        kmrf.raw_data = model_data.get('raw_data')
         kmrf.X_train = model_data.get('X_train')
         kmrf.y_train = model_data.get('y_train')
         kmrf.X_val = model_data.get('X_val')
@@ -1268,24 +1424,27 @@ class KMRF:
         kmrf.y_val = model_data.get('y_val')
         kmrf.y_test = model_data.get('y_test')
         
-        print(f"\n✓ Model loaded successfully")
-        print(f"  Asset: {kmrf.asset_name}")
-        print(f"  Asset class: {kmrf.asset_class}")
-        print(f"  Classification type: {kmrf.classification_type}")
-        print(f"  Training end date: {kmrf.end_date}")
-        print(f"  Features: {len(kmrf.selected_features) if kmrf.selected_features else 'all'}")
-        print(f"  Boruta used: {model_data.get('boruta_used', 'Unknown')}")
-        
-        if kmrf.X_train is not None:
-            print(f"\n  Restored data splits:")
-            print(f"    Training samples: {len(kmrf.X_train)} (with labels)")
-            if kmrf.X_val is not None:
-                print(f"    Validation samples: {len(kmrf.X_val)} (features only)")
+        if verbose:
+            print(f"\n✓ Model loaded successfully")
+            print(f"  Asset: {kmrf.asset_name}")
+            print(f"  Asset class: {kmrf.asset_class}")
+            print(f"  Classification type: {kmrf.classification_type}")
+            print(f"  Training end date: {kmrf.end_date}")
+            print(f"  Features: {len(kmrf.selected_features) if kmrf.selected_features else 'all'}")
+            print(f"  Boruta used: {model_data.get('boruta_used', 'Unknown')}")
+
+        if verbose:
+            if kmrf.X_train is not None:
+                print(f"\n  Restored data splits:")
+                print(f"    Training samples: {len(kmrf.X_train)} (with labels)")
+                if kmrf.X_val is not None:
+                    print(f"    Validation samples: {len(kmrf.X_val)} (features only)")
             if kmrf.X_test is not None:
                 print(f"    Test samples: {len(kmrf.X_test)} (features only)")
         
-        print(f"\n  Model is ready for predictions!")
-        print(f"  You can now call predict() without retraining.")
-        print(f"{'='*80}")
+        if verbose:
+            print(f"\n  Model is ready for predictions!")
+            print(f"  You can now call predict() without retraining.")
+            print(f"{'='*80}")
         
         return kmrf
