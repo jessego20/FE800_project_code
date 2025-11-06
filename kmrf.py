@@ -18,6 +18,7 @@ from pathlib import Path
 import warnings
 import pickle
 from glob import glob
+import matplotlib.pyplot as plt
 
 # Import the TimeSeriesDerivedFields class for feature engineering
 # import derive_features as dd # feature engineering is completed in feature_engineering.ipynb and saved in 'ready' data 
@@ -155,10 +156,10 @@ class KMRF:
         self.X_train: Optional[pd.DataFrame] = None
         self.y_train: Optional[pd.Series] = None
         self.X_val: Optional[pd.DataFrame] = None
-        self.y_val: Optional[pd.Series] = None  # None for val/test (no labels available)
+        self.y_val_proba: Optional[pd.Series] = None  # None for val/test (no labels available)
         self.X_test: Optional[pd.DataFrame] = None
-        self.y_test: Optional[pd.Series] = None  # None for val/test (no labels available)
-        
+        self.y_test_proba: Optional[pd.Series] = None  # None for val/test (no labels available)
+
         # Model components
         self.feature_selector = None
         self.rf_model = None
@@ -973,6 +974,9 @@ class KMRF:
         new_X_test = X_val_plus_test.loc[test_start:test_end]
         self.X_val = new_X_val
         self.X_test = new_X_test
+        self.validation_start = pd.to_datetime(val_start)
+        self.validation_end = pd.to_datetime(val_end)
+        self.test_start = pd.to_datetime(test_start)
 
     def __repr__(self) -> str:
         """String representation of the KMRF model."""
@@ -1223,33 +1227,169 @@ class KMRF:
         # Handle NaN values
         X_clean = X_flat.fillna(method='ffill').fillna(method='bfill')
         
-        if return_proba:
-            # Get probabilities for each class
-            proba = self.rf_model.predict_proba(X_clean.values)
-            
-            # Create DataFrame with meaningful column names
-            # Classes are sorted, so we need to map them correctly
-            classes = self.rf_model.classes_
-            
-            if self.classification_type == 'adapted':
-                class_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
-            else:  # original
-                class_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
-            
-            result = pd.DataFrame(
-                proba,
-                index=X.index,
-                columns=[class_names.get(c, f'P(Class_{c})') for c in classes]
-            )
-            
-            print(f"✓ Generated probability predictions: {result.shape}")
-            return result
+        # Get probabilities for each class
+        proba = self.rf_model.predict_proba(X_clean.values)
+        
+        # Create DataFrame with meaningful column names
+        # Classes are sorted, so we need to map them correctly
+        classes = self.rf_model.classes_
+        
+        if self.classification_type == 'adapted':
+            class_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
+        else:  # original
+            class_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
+        
+        result = pd.DataFrame(
+            proba,
+            index=X.index,
+            columns=[class_names.get(c, f'P(Class_{c})') for c in classes]
+        )
+        
+        print(f"✓ Generated probability predictions: {result.shape}")
+        if test_or_val.lower() == 'test':
+            self.y_test_proba = result
         else:
-            # Get class predictions
-            predictions = self.rf_model.predict(X_clean.values)
-            print(f"✓ Generated class predictions: {len(predictions)}")
-            return predictions
+            self.y_val_proba = result
+        return result
     
+    def viz_predictions(self, test_or_val: str = 'test') -> None:
+        if test_or_val.lower() == 'test':
+            if self.y_test_proba is None:
+                raise ValueError("No test predictions available. Generate predictions first.")
+                # pred_proba = self.predict(test_or_val='test')
+            else:
+                pred_proba = self.y_test_proba
+        else:
+            if self.y_val_proba is None:
+                raise ValueError("No validation predictions available. Generate predictions first.")
+                # pred_proba = self.predict(test_or_val='val')
+            else:
+                pred_proba = self.y_val_proba
+
+        pred = pred_proba.apply(lambda row: np.argmax(row)-1, axis=1)
+
+        # Get raw price data for test period - aligned with prediction dates
+        asset_price = self.raw_data[[(self.asset_name, 'open'), (self.asset_name, 'close')]]
+        asset_price = asset_price.loc[pred_proba.index]
+        asset_price.columns = ['open', 'close']
+
+        # Create comprehensive visualization
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 12), height_ratios=[3, 1])
+
+        # === Price Plot with Regime Overlays ===
+        # Plot asset price
+        ax1.plot(asset_price.index, asset_price['close'], color='black', linewidth=1.5, 
+                    alpha=0.9, label='Asset Price', zorder=3)
+
+        # Define colors and labels for regimes based on classification type
+        if self.classification_type == 'original':
+            colors = {0: 'green', 1: 'lightblue', 2: 'yellow', 3: 'darkred'}
+            labels_dict = {0: 'LV_Bull', 1: 'LV_Bear', 2: 'HV_Bull', 3: 'HV_Bear'}
+            prob_cols = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
+        else:
+            colors = {1: 'green', 0: 'grey', -1: 'darkred'}
+            labels_dict = {1: 'Bullish', 0: 'Other', -1: 'Bearish'}
+            prob_cols = {1: 'P(Bullish)', 0: 'P(Other)', -1: 'P(Bearish)'}
+
+
+        # Shade regime periods
+        for regime in labels_dict:
+            mask = pred == regime
+            if mask.any():
+                ax1.fill_between(
+                    asset_price.index,
+                    asset_price['close'].min() * 0.95,
+                    asset_price['close'].max() * 1.05,
+                    where=mask,
+                    alpha=0.4,
+                    color=colors[regime],
+                    label=f'Predicted {labels_dict[regime]}',
+                    zorder=1
+                )
+
+        ax1.set_xlabel('Date', fontsize=12)
+        ax1.set_ylabel('Price ($)', fontsize=12)
+        ax1.set_title(f'{self.asset_name} with Predicted Regimes - Test Period ({pred_proba.index[0].date()} to {pred_proba.index[-1].date()})', 
+                        fontsize=14, fontweight='bold')
+        ax1.legend(loc='best', fontsize=11)
+        ax1.grid(True, alpha=0.3, zorder=2)
+
+        # === Regime Probabilities ===
+        # Plot regime probabilities
+        # Handle different regime types based on classification
+        if self.classification_type == 'original':
+            # Original 4-regime system
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(LV_Bull)'],
+                            alpha=0.7, color='green', label='P(LV Bullish)')
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(LV_Bear)'],
+                            alpha=0.7, color='lightblue', label='P(LV Bearish)')
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(HV_Bull)'],
+                            alpha=0.7, color='yellow', label='P(HV Bullish)')
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(HV_Bear)'],
+                            alpha=0.7, color='darkred', label='P(HV Bearish)')
+        else:
+            # Adapted 3-regime system
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(Bullish)'],
+                            alpha=0.7, color='green', label='P(Bullish)')
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(Other)'],
+                            alpha=0.7, color='gray', label='P(Other)')
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(Bearish)'],
+                            alpha=0.7, color='darkred', label='P(Bearish)')
+
+        ax2.set_xlabel('Date', fontsize=12)
+        ax2.set_ylabel('Probability', fontsize=12)
+        ax2.set_title('Regime Prediction Probabilities', fontsize=12, fontweight='bold')
+        ax2.set_ylim(0, 1)
+        ax2.legend(loc='best', fontsize=10)
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+        print("\n✓ Regime visualization complete!")
+
+        # === Summary Statistics ===
+        print(f"\n" + "="*60)
+        print(f"PREDICTION SUMMARY FOR {self.asset_name}")
+        print(f"="*60)
+        print(f"Test Period: {pred_proba.index[0].date()} to {pred_proba.index[-1].date()}")
+        print(f"Total Trading Days: {len(pred_proba)}")
+
+        # Price performance during test period
+        price_start = asset_price['open'].iloc[0]
+        price_end = asset_price['close'].iloc[-1]
+        total_return = (price_end - price_start) / price_start * 100
+
+        print(f"\nPrice Performance:")
+        print(f"  Start Price (open on {asset_price.index[0].date()}): ${price_start:.2f}")
+        print(f"  End Price (close on {asset_price.index[-1].date()}): ${price_end:.2f}")
+        print(f"  Buy and Hold Return: {total_return:.2f}%")
+
+        # Regime statistics
+        if self.classification_type == 'original':
+            regime_names = {
+                0: 'LV Bullish',
+                1: 'LV Bearish',
+                2: 'HV Bullish',
+                3: 'HV Bearish'
+            }
+        else: # adapted
+            regime_names = {
+                -1: 'Bearish',
+                0: 'Other',
+                1: 'Bullish'
+            }
+        print(f"\nRegime Prediction Statistics:")
+        for regime, name in regime_names.items():
+            count = (pred == regime).sum()
+            pct = (count / len(pred)) * 100
+            avg_prob = pred_proba[prob_cols[regime]].mean()
+            print(f"  {name:>8}: {count:>3} days ({pct:>5.1f}%) | Avg Prob: {avg_prob:.3f}")
+
+        # High confidence predictions
+        high_confidence = pred_proba.max(axis=1) > 0.7
+        print(f"\nHigh Confidence Predictions (>70%): {high_confidence.sum()} days ({high_confidence.mean()*100:.1f}%)")
+
     def save_model(
         self,
         model_dir: Optional[Union[str, Path]] = None,
@@ -1328,8 +1468,8 @@ class KMRF:
             'y_train': self.y_train,
             'X_val': self.X_val,
             'X_test': self.X_test,
-            'y_val': self.y_val,
-            'y_test': self.y_test,
+            'y_val_proba': self.y_val_proba,
+            'y_test_proba': self.y_test_proba,
             'boruta_used': boruta_used
         }
         
@@ -1421,8 +1561,8 @@ class KMRF:
         kmrf.y_train = model_data.get('y_train')
         kmrf.X_val = model_data.get('X_val')
         kmrf.X_test = model_data.get('X_test')
-        kmrf.y_val = model_data.get('y_val')
-        kmrf.y_test = model_data.get('y_test')
+        kmrf.y_val_proba = model_data.get('y_val_proba')
+        kmrf.y_test_proba = model_data.get('y_test_proba')
         
         if verbose:
             print(f"\n✓ Model loaded successfully")
