@@ -2,111 +2,87 @@
   "Gold Futures": {
     "status": "success",
     "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Gold-Futures_20190101_boruta.pkl",
-    "n_features": 53,
-    "n_selected_features": 53,
-    "n_train_samples": 6092,
-    "n_test_samples": 1738,
+    "n_features": 80,
+    "n_selected_features": 80,
+    "n_train_samples": 5840,
+    "n_test_samples": 1036,
     "boruta_used": true,
-    "duration_seconds": 62.429759,
-    "timestamp": "2025-11-05T13:06:54.976188"
+    "duration_seconds": 78.918357,
+    "timestamp": "2025-11-05T22:48:40.950972"
   },
   "Wheat Futures": {
-    "status": "success",
-    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Wheat-Futures_20190101_boruta.pkl",
-    "n_features": 58,
-    "n_selected_features": 58,
-    "n_train_samples": 6052,
-    "n_test_samples": 1738,
-    "boruta_used": true,
-    "duration_seconds": 16.438903,
-    "timestamp": "2025-11-05T13:07:11.415165"
+    "status": "failed",
+    "error": "\"[Timestamp('2010-04-02 00:00:00')] not in index\"",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_70576/3546891947.py\", line 121, in train_kmrf_batch\n    model.adapt_regime_labels()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 665, in adapt_regime_labels\n    lv_prices = price_data.loc[lv_indices]\n                ~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1192, in __getitem__\n    return self._getitem_axis(maybe_callable, axis=axis)\n           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1421, in _getitem_axis\n    return self._getitem_iterable(key, axis=axis)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1361, in _getitem_iterable\n    keyarr, indexer = self._get_listlike_indexer(key, axis)\n                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1559, in _get_listlike_indexer\n    keyarr, indexer = ax._get_indexer_strict(key, axis_name)\n                      ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6212, in _get_indexer_strict\n    self._raise_if_missing(keyarr, indexer, axis_name)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6264, in _raise_if_missing\n    raise KeyError(f\"{not_found} not in index\")\nKeyError: \"[Timestamp('2010-04-02 00:00:00')] not in index\"\n",
+    "duration_seconds": 0.66501,
+    "timestamp": "2025-11-05T22:48:41.622319"
   },
   "Corn Futures": {
-    "status": "success",
-    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Corn-Futures_20190101_boruta.pkl",
-    "n_features": 58,
-    "n_selected_features": 58,
-    "n_train_samples": 6028,
-    "n_test_samples": 1738,
-    "boruta_used": true,
-    "duration_seconds": 10.900384,
-    "timestamp": "2025-11-05T13:07:22.315621"
+    "status": "failed",
+    "error": "\"[Timestamp('1996-07-05 00:00:00')] not in index\"",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_70576/3546891947.py\", line 121, in train_kmrf_batch\n    model.adapt_regime_labels()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 630, in adapt_regime_labels\n    hv_prices = price_data.loc[hv_indices]\n                ~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1192, in __getitem__\n    return self._getitem_axis(maybe_callable, axis=axis)\n           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1421, in _getitem_axis\n    return self._getitem_iterable(key, axis=axis)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1361, in _getitem_iterable\n    keyarr, indexer = self._get_listlike_indexer(key, axis)\n                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1559, in _get_listlike_indexer\n    keyarr, indexer = ax._get_indexer_strict(key, axis_name)\n                      ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6212, in _get_indexer_strict\n    self._raise_if_missing(keyarr, indexer, axis_name)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6264, in _raise_if_missing\n    raise KeyError(f\"{not_found} not in index\")\nKeyError: \"[Timestamp('1996-07-05 00:00:00')] not in index\"\n",
+    "duration_seconds": 0.626788,
+    "timestamp": "2025-11-05T22:48:42.250052"
   },
   "Copper": {
     "status": "success",
     "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Copper_20190101_boruta.pkl",
-    "n_features": 56,
-    "n_selected_features": 56,
-    "n_train_samples": 6094,
-    "n_test_samples": 1738,
+    "n_features": 83,
+    "n_selected_features": 83,
+    "n_train_samples": 5839,
+    "n_test_samples": 1036,
     "boruta_used": true,
-    "duration_seconds": 61.912728,
-    "timestamp": "2025-11-05T13:08:24.228471"
+    "duration_seconds": 98.413771,
+    "timestamp": "2025-11-05T22:50:20.663985"
   },
   "Sugar": {
-    "status": "success",
-    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Sugar_20190101_boruta.pkl",
-    "n_features": 58,
-    "n_selected_features": 58,
-    "n_train_samples": 6011,
-    "n_test_samples": 1738,
-    "boruta_used": true,
-    "duration_seconds": 61.82443,
-    "timestamp": "2025-11-05T13:09:26.053012"
+    "status": "failed",
+    "error": "\"[Timestamp('2000-01-03 00:00:00')] not in index\"",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_70576/3546891947.py\", line 121, in train_kmrf_batch\n    model.adapt_regime_labels()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 665, in adapt_regime_labels\n    lv_prices = price_data.loc[lv_indices]\n                ~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1192, in __getitem__\n    return self._getitem_axis(maybe_callable, axis=axis)\n           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1421, in _getitem_axis\n    return self._getitem_iterable(key, axis=axis)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1361, in _getitem_iterable\n    keyarr, indexer = self._get_listlike_indexer(key, axis)\n                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1559, in _get_listlike_indexer\n    keyarr, indexer = ax._get_indexer_strict(key, axis_name)\n                      ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6212, in _get_indexer_strict\n    self._raise_if_missing(keyarr, indexer, axis_name)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6264, in _raise_if_missing\n    raise KeyError(f\"{not_found} not in index\")\nKeyError: \"[Timestamp('2000-01-03 00:00:00')] not in index\"\n",
+    "duration_seconds": 0.627211,
+    "timestamp": "2025-11-05T22:50:21.292951"
   },
   "Soybean Futures": {
-    "status": "success",
-    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Soybean-Futures_20190101_boruta.pkl",
-    "n_features": 58,
-    "n_selected_features": 58,
-    "n_train_samples": 6049,
-    "n_test_samples": 1738,
-    "boruta_used": true,
-    "duration_seconds": 12.972143,
-    "timestamp": "2025-11-05T13:09:39.025226"
+    "status": "failed",
+    "error": "\"[Timestamp('1999-11-26 00:00:00'), Timestamp('2000-01-03 00:00:00')] not in index\"",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_70576/3546891947.py\", line 121, in train_kmrf_batch\n    model.adapt_regime_labels()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 665, in adapt_regime_labels\n    lv_prices = price_data.loc[lv_indices]\n                ~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1192, in __getitem__\n    return self._getitem_axis(maybe_callable, axis=axis)\n           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1421, in _getitem_axis\n    return self._getitem_iterable(key, axis=axis)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1361, in _getitem_iterable\n    keyarr, indexer = self._get_listlike_indexer(key, axis)\n                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1559, in _get_listlike_indexer\n    keyarr, indexer = ax._get_indexer_strict(key, axis_name)\n                      ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6212, in _get_indexer_strict\n    self._raise_if_missing(keyarr, indexer, axis_name)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6264, in _raise_if_missing\n    raise KeyError(f\"{not_found} not in index\")\nKeyError: \"[Timestamp('1999-11-26 00:00:00'), Timestamp('2000-01-03 00:00:00')] not in index\"\n",
+    "duration_seconds": 0.592837,
+    "timestamp": "2025-11-05T22:50:21.887047"
   },
   "Live Cattle Futures": {
-    "status": "success",
-    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Live-Cattle-Futures_20190101_boruta.pkl",
-    "n_features": 84,
-    "n_selected_features": 84,
-    "n_train_samples": 6958,
-    "n_test_samples": 1738,
-    "boruta_used": true,
-    "duration_seconds": 79.990971,
-    "timestamp": "2025-11-05T13:10:59.016336"
+    "status": "failed",
+    "error": "\"[Timestamp('1996-04-28 00:00:00'), Timestamp('1996-05-05 00:00:00'), Timestamp('1996-05-12 00:00:00'), Timestamp('1996-05-19 00:00:00'), Timestamp('1996-05-27 00:00:00')] not in index\"",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_70576/3546891947.py\", line 121, in train_kmrf_batch\n    model.adapt_regime_labels()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 665, in adapt_regime_labels\n    lv_prices = price_data.loc[lv_indices]\n                ~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1192, in __getitem__\n    return self._getitem_axis(maybe_callable, axis=axis)\n           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1421, in _getitem_axis\n    return self._getitem_iterable(key, axis=axis)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1361, in _getitem_iterable\n    keyarr, indexer = self._get_listlike_indexer(key, axis)\n                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1559, in _get_listlike_indexer\n    keyarr, indexer = ax._get_indexer_strict(key, axis_name)\n                      ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6212, in _get_indexer_strict\n    self._raise_if_missing(keyarr, indexer, axis_name)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6264, in _raise_if_missing\n    raise KeyError(f\"{not_found} not in index\")\nKeyError: \"[Timestamp('1996-04-28 00:00:00'), Timestamp('1996-05-05 00:00:00'), Timestamp('1996-05-12 00:00:00'), Timestamp('1996-05-19 00:00:00'), Timestamp('1996-05-27 00:00:00')] not in index\"\n",
+    "duration_seconds": 0.588565,
+    "timestamp": "2025-11-05T22:50:22.476968"
   },
   "Natural Gas": {
-    "status": "success",
-    "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Natural-Gas_20190101_boruta.pkl",
-    "n_features": 58,
-    "n_selected_features": 58,
-    "n_train_samples": 4708,
-    "n_test_samples": 1738,
-    "boruta_used": true,
-    "duration_seconds": 30.406817,
-    "timestamp": "2025-11-05T13:11:29.423232"
+    "status": "failed",
+    "error": "\"[Timestamp('2002-07-04 00:00:00')] not in index\"",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_70576/3546891947.py\", line 121, in train_kmrf_batch\n    model.adapt_regime_labels()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 665, in adapt_regime_labels\n    lv_prices = price_data.loc[lv_indices]\n                ~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1192, in __getitem__\n    return self._getitem_axis(maybe_callable, axis=axis)\n           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1421, in _getitem_axis\n    return self._getitem_iterable(key, axis=axis)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1361, in _getitem_iterable\n    keyarr, indexer = self._get_listlike_indexer(key, axis)\n                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexing.py\", line 1559, in _get_listlike_indexer\n    keyarr, indexer = ax._get_indexer_strict(key, axis_name)\n                      ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6212, in _get_indexer_strict\n    self._raise_if_missing(keyarr, indexer, axis_name)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/jessegoodman/.pyenv/versions/3.13.9/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 6264, in _raise_if_missing\n    raise KeyError(f\"{not_found} not in index\")\nKeyError: \"[Timestamp('2002-07-04 00:00:00')] not in index\"\n",
+    "duration_seconds": 0.567048,
+    "timestamp": "2025-11-05T22:50:23.045372"
   },
   "Coffee": {
     "status": "success",
     "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Coffee_20190101_boruta.pkl",
-    "n_features": 56,
-    "n_selected_features": 56,
-    "n_train_samples": 6009,
-    "n_test_samples": 1738,
+    "n_features": 68,
+    "n_selected_features": 68,
+    "n_train_samples": 5755,
+    "n_test_samples": 1036,
     "boruta_used": true,
-    "duration_seconds": 20.225995,
-    "timestamp": "2025-11-05T13:11:49.649290"
+    "duration_seconds": 67.942082,
+    "timestamp": "2025-11-05T22:51:30.987587"
   },
   "Brent Crude Oil": {
     "status": "success",
     "model_path": "saved_models/KMRF/adapted_labels/commodity/KMRF_Brent-Crude-Oil_20190101_boruta.pkl",
-    "n_features": 54,
-    "n_selected_features": 54,
-    "n_train_samples": 3230,
-    "n_test_samples": 1738,
+    "n_features": 83,
+    "n_selected_features": 83,
+    "n_train_samples": 2973,
+    "n_test_samples": 1036,
     "boruta_used": true,
-    "duration_seconds": 33.093372,
-    "timestamp": "2025-11-05T13:12:22.742762"
+    "duration_seconds": 30.991096,
+    "timestamp": "2025-11-05T22:52:01.978751"
   }
 }

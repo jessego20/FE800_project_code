@@ -133,6 +133,7 @@ class KMRF:
                     'us_treasury': 'data/ready/us_treasury.csv'
                 }
             else:
+                # TODO: implement using raw data instead of 'ready' data
                 raise NotImplementedError("Only implemented to use pre-computed 'ready' data")
             self.data_path = Path(data_path_map.get(asset_class, ''))
         else:
@@ -144,6 +145,7 @@ class KMRF:
             self.kama_msr_model_dir = Path(kama_msr_model_dir)
         
         # Initialize data containers
+        self.raw_ohlc: Optional[pd.DataFrame] = None
         self.raw_data: Optional[pd.DataFrame] = None
         self.features: Optional[pd.DataFrame] = None
         self.labels: Optional[pd.Series] = None  # Original KAMA+MSR 4-regime labels
@@ -178,9 +180,9 @@ class KMRF:
         print(f"  Test start: {test_start}")
         print(f"  Random seed: {self.random_seed}")
 
-    def set_raw_data(self, data: Optional[pd.DataFrame] = None):
+    def set_raw_ohlc(self, data: Optional[pd.DataFrame] = None):
         if data is not None:
-            self.raw_data = data
+            self.raw_ohlc = data
         else:
             us_equity_symbol_names = {
                 # BOND ETFS
@@ -298,7 +300,7 @@ class KMRF:
                 raw_price_data.index = pd.to_datetime(raw_price_data.index)
                 raw_price_data.rename(columns=comm_symbol_name_dict, level=0, inplace=True)
 
-            self.raw_data = raw_price_data[[(self.asset_name, 'open'), 
+            self.raw_ohlc = raw_price_data[[(self.asset_name, 'open'), 
                                             (self.asset_name, 'high'), 
                                             (self.asset_name, 'low'), 
                                             (self.asset_name, 'close')]].dropna(how='all')
@@ -309,6 +311,8 @@ class KMRF:
             raise FileNotFoundError(f"Data file not found: {self.data_path}")
         
         print(f"\nLoading data from: {self.data_path}")
+
+        self.set_raw_ohlc()
         
         # Load full dataset
         full_data = pd.read_csv(
@@ -350,6 +354,7 @@ class KMRF:
             self.features = self.raw_data.copy()
             print(f"  Features shape: {self.features.shape}")
         else:
+            # TODO: implement using raw data instead of 'ready' data
             raise NotImplementedError("Feature computation from raw data not yet implemented.")
         
         return self.features
@@ -1269,7 +1274,7 @@ class KMRF:
         pred = pred_proba.apply(lambda row: np.argmax(row)-1, axis=1)
 
         # Get raw price data for test period - aligned with prediction dates
-        asset_price = self.raw_data[[(self.asset_name, 'open'), (self.asset_name, 'close')]]
+        asset_price = self.raw_ohlc[[(self.asset_name, 'open'), (self.asset_name, 'close')]]
         asset_price = asset_price.loc[pred_proba.index]
         asset_price.columns = ['open', 'close']
 
@@ -1464,6 +1469,8 @@ class KMRF:
             'test_start': self.test_start,
             # Save train/val/test splits
             'raw_data': self.raw_data,
+            'ohlc_data': self.raw_ohlc,
+            'features': self.features,
             'X_train': self.X_train,
             'y_train': self.y_train,
             'X_val': self.X_val,
@@ -1557,6 +1564,8 @@ class KMRF:
         
         # Restore train/val/test splits
         kmrf.raw_data = model_data.get('raw_data')
+        kmrf.raw_ohlc = model_data.get('ohlc_data')
+        kmrf.features = model_data.get('features')
         kmrf.X_train = model_data.get('X_train')
         kmrf.y_train = model_data.get('y_train')
         kmrf.X_val = model_data.get('X_val')
