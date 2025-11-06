@@ -567,6 +567,9 @@ class KMRF:
         2. Bearish (-1): HV bearish + extension to trough of next LV bearish
         3. Other (0): Remaining periods (including post-peak HV bullish and post-trough LV bearish)
         """
+        if self.classification_type != 'adapted':
+            raise ValueError("Classification type is not 'adapted'. Cannot adapt labels.")
+        
         if labels is None:
             if self.labels is None:
                 raise ValueError("No labels available. Load KAMA+MSR labels first.")
@@ -1493,7 +1496,24 @@ class KMRF:
         print(f"✓ Model saved successfully")
         
         return model_path
-    
+
+    def pipeline(self, use_boruta: bool = True) -> None:
+        """
+        Run the full KMRF pipeline: load data, train model, and evaluate.
+        """
+        raw_or_ready_data = self.load_data()
+        features = self.get_features()
+        kama_msr_labels = self.load_kama_msr_labels(0)
+        if self.classification_type == 'adapted':
+            adapted_labels = self.adapt_labels(kama_msr_labels)
+        X_train, y_train = self.prepare_training_data(
+            include_macro=True,
+            select_features=use_boruta,
+            boruta_params={'max_iter': 100},
+            split_data=True
+        )
+        self.fit()
+
     @classmethod
     def load_model(cls, model_path: Union[str, Path], use_ready_data: bool = True, verbose: bool = False) -> 'KMRF':
         """
