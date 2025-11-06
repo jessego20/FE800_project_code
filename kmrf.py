@@ -417,7 +417,7 @@ class KMRF:
         This method forward-fills the data to match the daily frequency of asset data.
         """
         if macro_data_path is None:
-            macro_data_path = Path('data/ready/macro_data_all.csv')
+            macro_data_path = Path('data/ready/macro_data_daily.csv')
         else:
             macro_data_path = Path(macro_data_path)
         
