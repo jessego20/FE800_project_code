@@ -66,9 +66,9 @@ class KMRF:
         kama_msr_model_dir: Optional[Union[str, Path]] = None,
         end_date: str = '20190101',
         use_ready_data: bool = True,
-        validation_start: str = '2019-04-01',
-        validation_end: str = '2019-09-30',
-        test_start: str = '2020-01-01',
+        validation_start: str = '2019-02-01',
+        validation_end: str = '2021-12-30',
+        test_start: str = '2022-02-01',
         random_seed: int = 1010,
         classification_type: str = 'adapted'
     ):
@@ -335,7 +335,7 @@ class KMRF:
                 f"Available assets: {', '.join(available_assets[:10])}..."
             )
         
-        self.raw_data = full_data.xs(self.asset_name, level=0, axis=1)
+        self.raw_data = full_data.xs(self.asset_name, level=0, axis=1).dropna(how='all')
         
         print(f"Loaded data for: {self.asset_name}")
         print(f"  Rows: {self.raw_data.shape[0]}")
@@ -357,6 +357,7 @@ class KMRF:
             # TODO: implement using raw data instead of 'ready' data
             raise NotImplementedError("Feature computation from raw data not yet implemented.")
         
+        self.features = self.features.dropna(how='all')
         return self.features
     
     def load_kama_msr_labels(self) -> pd.Series:
@@ -428,14 +429,14 @@ class KMRF:
         
         print(f"\nLoading macroeconomic data from: {macro_data_path}")
         
-        macro_df = pd.read_csv(macro_data_path, index_col=0, header=[0, 1], parse_dates=True)
+        macro_df = pd.read_csv(macro_data_path, index_col=0, header=0, parse_dates=True)
         macro_df.index = pd.to_datetime(macro_df.index)
         
         if self.features is not None:
             macro_df = macro_df.reindex(self.features.index).ffill()
             print(f"Aligned macro data to features index")
         
-        self.macro_data = macro_df
+        self.macro_data = macro_df.dropna(how='all')
         
         print(f"Macro data shape: {macro_df.shape}")
         print(f"Macro indicators: {len(macro_df.columns.get_level_values(0).unique())}")
@@ -990,17 +991,20 @@ class KMRF:
         """String representation of the KMRF model."""
         status = [f"KMRF('{self.asset_class}, {self.asset_name}')"]
         
-        if self.raw_data is not None:
-            status.append(f"Raw Price Data {self.raw_data.shape}: {self.raw_data.index[0].date()} to {self.raw_data.index[-1].date()}")
+        if self.raw_ohlc is not None:
+            status.append(f"Raw OHLC Data {self.raw_ohlc.shape}: {self.raw_ohlc.index[0].date()} to {self.raw_ohlc.index[-1].date()}")
         
-        # if self.features is not None:
-        #     status.append(f"Features: {self.features.shape}")
+        if self.features is not None:
+            status.append(f"Technical Features {self.features.shape}: {self.features.index[0].date()} to {self.features.index[-1].date()}")
+
+        if self.macro_data is not None:
+            status.append(f"Macro Features {self.macro_data.shape}: {self.macro_data.index[0].date()} to {self.macro_data.index[-1].date()}")
+
+        if self.labels is not None:
+            status.append(f"4-Regime Labels ({len(self.labels)}): {self.labels.index[0].date()} to {self.labels.index[-1].date()}")
         
-        # if self.labels is not None:
-        #     status.append(f"4-Regime Labels: ({len(self.labels)},)")
-        
-        # if self.adapted_labels is not None:
-        #     status.append(f"3-Class Labels: ({len(self.adapted_labels)},)")
+        if self.adapted_labels is not None:
+            status.append(f"3-Class Labels ({len(self.adapted_labels)}): {self.adapted_labels.index[0].date()} to {self.adapted_labels.index[-1].date()}")
         
         if self.X_train is not None:
             status.append(f"Train {self.X_train.shape}: {self.X_train.index[0].date()} to {self.X_train.index[-1].date()}")
@@ -1274,7 +1278,10 @@ class KMRF:
             else:
                 pred_proba = self.y_val_proba
 
-        pred = pred_proba.apply(lambda row: np.argmax(row)-1, axis=1)
+        if self.classification_type == 'original':
+            pred = pred_proba.apply(lambda row: np.argmax(row), axis=1)
+        else:
+            pred = pred_proba.apply(lambda row: np.argmax(row)-1, axis=1)
 
         # Get raw price data for test period - aligned with prediction dates
         asset_price = self.raw_ohlc[[(self.asset_name, 'open'), (self.asset_name, 'close')]]
@@ -1317,7 +1324,7 @@ class KMRF:
 
         ax1.set_xlabel('Date', fontsize=12)
         ax1.set_ylabel('Price ($)', fontsize=12)
-        ax1.set_title(f'{self.asset_name} with Predicted Regimes - Test Period ({pred_proba.index[0].date()} to {pred_proba.index[-1].date()})', 
+        ax1.set_title(f'{self.asset_name} with Predicted Regimes - {test_or_val.capitalize()} Period ({pred_proba.index[0].date()} to {pred_proba.index[-1].date()})', 
                         fontsize=14, fontweight='bold')
         ax1.legend(loc='best', fontsize=11)
         ax1.grid(True, alpha=0.3, zorder=2)
@@ -1350,11 +1357,6 @@ class KMRF:
         ax2.set_ylim(0, 1)
         ax2.legend(loc='best', fontsize=10)
         ax2.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.show()
-
-        print("\n✓ Regime visualization complete!")
 
         # === Summary Statistics ===
         print(f"\n" + "="*60)
@@ -1397,6 +1399,13 @@ class KMRF:
         # High confidence predictions
         high_confidence = pred_proba.max(axis=1) > 0.7
         print(f"\nHigh Confidence Predictions (>70%): {high_confidence.sum()} days ({high_confidence.mean()*100:.1f}%)")
+
+        plt.tight_layout()
+        plt.show()
+
+    def viz_training_labels(self) -> None:
+        # TODO: implement
+        pass
 
     def save_model(
         self,
@@ -1474,6 +1483,7 @@ class KMRF:
             'raw_data': self.raw_data,
             'ohlc_data': self.raw_ohlc,
             'features': self.features,
+            'macro_data': self.macro_data,
             'X_train': self.X_train,
             'y_train': self.y_train,
             'X_val': self.X_val,
@@ -1497,17 +1507,17 @@ class KMRF:
         
         return model_path
 
-    def pipeline(self, use_boruta: bool = True) -> None:
+    def pipeline(self, use_boruta: bool = True, include_macro: bool = True) -> None:
         """
         Run the full KMRF pipeline: load data, train model, and evaluate.
         """
         raw_or_ready_data = self.load_data()
         features = self.get_features()
-        kama_msr_labels = self.load_kama_msr_labels(0)
+        kama_msr_labels = self.load_kama_msr_labels()
         if self.classification_type == 'adapted':
-            adapted_labels = self.adapt_labels(kama_msr_labels)
+            adapted_labels = self.adapt_regime_labels(kama_msr_labels)
         X_train, y_train = self.prepare_training_data(
-            include_macro=True,
+            include_macro=include_macro,
             select_features=use_boruta,
             boruta_params={'max_iter': 100},
             split_data=True
@@ -1586,6 +1596,7 @@ class KMRF:
         kmrf.raw_data = model_data.get('raw_data')
         kmrf.raw_ohlc = model_data.get('ohlc_data')
         kmrf.features = model_data.get('features')
+        kmrf.macro_data = model_data.get('macro_data')
         kmrf.X_train = model_data.get('X_train')
         kmrf.y_train = model_data.get('y_train')
         kmrf.X_val = model_data.get('X_val')

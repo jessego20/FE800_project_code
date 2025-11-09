@@ -2,57 +2,57 @@
   "SPDR S&P 500 ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_SPDR-S&P-500-ETF_20190101_boruta.pkl",
-    "n_features": 102,
-    "n_selected_features": 102,
+    "n_features": 110,
+    "n_selected_features": 110,
     "n_train_samples": 5789,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 353.804126,
-    "timestamp": "2025-11-06T00:48:37.748525"
+    "duration_seconds": 11980.984959,
+    "timestamp": "2025-11-06T19:41:38.945661"
   },
   "Invesco QQQ Trust": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Invesco-QQQ-Trust_20190101_boruta.pkl",
-    "n_features": 109,
-    "n_selected_features": 109,
+    "n_features": 116,
+    "n_selected_features": 116,
     "n_train_samples": 4733,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 1015.402451,
-    "timestamp": "2025-11-06T01:05:33.151948"
+    "duration_seconds": 13632.554103,
+    "timestamp": "2025-11-06T23:28:51.499877"
   },
   "iShares Russell 2000 ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Russell-2000-ETF_20190101_boruta.pkl",
-    "n_features": 106,
-    "n_selected_features": 106,
+    "n_features": 113,
+    "n_selected_features": 113,
     "n_train_samples": 4425,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 92.225865,
-    "timestamp": "2025-11-06T01:07:05.378167"
+    "duration_seconds": 15145.225705,
+    "timestamp": "2025-11-07T03:41:16.725702"
   },
   "Energy Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Energy-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 107,
-    "n_selected_features": 107,
+    "n_features": 115,
+    "n_selected_features": 115,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 106.112258,
-    "timestamp": "2025-11-06T01:10:42.035202"
+    "duration_seconds": 10354.220808,
+    "timestamp": "2025-11-07T10:54:28.760301"
   },
   "Financial Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Financial-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 107,
-    "n_selected_features": 107,
+    "n_features": 114,
+    "n_selected_features": 114,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 100.901441,
-    "timestamp": "2025-11-06T01:12:22.936736"
+    "duration_seconds": 10989.656506,
+    "timestamp": "2025-11-07T13:57:38.416973"
   },
   "Utilities Select Sector SPDR": {
     "status": "success",
@@ -60,152 +60,152 @@
     "n_features": 17,
     "n_selected_features": 17,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 49.957301,
-    "timestamp": "2025-11-06T01:13:12.894115"
+    "duration_seconds": 4248.55271,
+    "timestamp": "2025-11-07T15:08:26.969814"
   },
   "Industrial Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Industrial-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 107,
-    "n_selected_features": 107,
+    "n_features": 115,
+    "n_selected_features": 115,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 77.148073,
-    "timestamp": "2025-11-06T01:14:30.042260"
+    "duration_seconds": 10173.2988,
+    "timestamp": "2025-11-07T17:58:00.268981"
   },
   "Health Care Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Health-Care-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 98,
-    "n_selected_features": 98,
+    "n_features": 100,
+    "n_selected_features": 100,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 105.06342,
-    "timestamp": "2025-11-06T01:16:15.105756"
+    "duration_seconds": 11753.876776,
+    "timestamp": "2025-11-07T21:13:54.145908"
   },
   "Technology Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Technology-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 109,
-    "n_selected_features": 109,
+    "n_features": 116,
+    "n_selected_features": 116,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 82.197253,
-    "timestamp": "2025-11-06T01:17:37.303090"
+    "duration_seconds": 13038.9151,
+    "timestamp": "2025-11-08T00:51:13.061208"
   },
   "Materials Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Materials-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 106,
-    "n_selected_features": 106,
+    "n_features": 113,
+    "n_selected_features": 113,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 111.81161,
-    "timestamp": "2025-11-06T01:19:29.114806"
+    "duration_seconds": 16359.764564,
+    "timestamp": "2025-11-08T05:23:52.825907"
   },
   "Consumer Discretionary Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Consumer-Discretionary-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 107,
-    "n_selected_features": 107,
+    "n_features": 113,
+    "n_selected_features": 113,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 108.436783,
-    "timestamp": "2025-11-06T01:21:17.551720"
+    "duration_seconds": 9481.087934,
+    "timestamp": "2025-11-08T08:01:53.913962"
   },
   "Consumer Staples Select Sector SPDR": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_Consumer-Staples-Select-Sector-SPDR_20190101_boruta.pkl",
-    "n_features": 106,
-    "n_selected_features": 106,
+    "n_features": 114,
+    "n_selected_features": 114,
     "n_train_samples": 4785,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 115.264497,
-    "timestamp": "2025-11-06T01:23:12.816329"
+    "duration_seconds": 10952.963421,
+    "timestamp": "2025-11-08T11:04:26.877465"
   },
   "iShares S&P 500 Growth ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-S&P-500-Growth-ETF_20190101_boruta.pkl",
-    "n_features": 101,
-    "n_selected_features": 101,
+    "n_features": 106,
+    "n_selected_features": 106,
     "n_train_samples": 4425,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 109.152728,
-    "timestamp": "2025-11-06T01:25:01.969126"
+    "duration_seconds": 13024.700422,
+    "timestamp": "2025-11-08T14:41:31.577986"
   },
   "iShares S&P 500 Value ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-S&P-500-Value-ETF_20190101_boruta.pkl",
-    "n_features": 111,
-    "n_selected_features": 111,
+    "n_features": 119,
+    "n_selected_features": 119,
     "n_train_samples": 4425,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 59.707451,
-    "timestamp": "2025-11-06T01:26:01.676659"
+    "duration_seconds": 7461.347658,
+    "timestamp": "2025-11-08T16:45:52.925771"
   },
   "iShares Russell 2000 Growth ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Russell-2000-Growth-ETF_20190101_boruta.pkl",
-    "n_features": 104,
-    "n_selected_features": 104,
+    "n_features": 109,
+    "n_selected_features": 109,
     "n_train_samples": 4382,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 110.073192,
-    "timestamp": "2025-11-06T01:27:51.750375"
+    "duration_seconds": 109.670218,
+    "timestamp": "2025-11-08T16:47:42.596152"
   },
   "iShares Russell 2000 Value ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Russell-2000-Value-ETF_20190101_boruta.pkl",
-    "n_features": 107,
-    "n_selected_features": 107,
+    "n_features": 115,
+    "n_selected_features": 115,
     "n_train_samples": 4382,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 1001.700961,
-    "timestamp": "2025-11-06T01:44:33.451610"
+    "duration_seconds": 107.471323,
+    "timestamp": "2025-11-08T16:49:30.067620"
   },
   "iShares Russell Mid-Cap ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Russell-Mid-Cap-ETF_20190101_boruta.pkl",
-    "n_features": 103,
-    "n_selected_features": 103,
+    "n_features": 109,
+    "n_selected_features": 109,
     "n_train_samples": 4136,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 85.255672,
-    "timestamp": "2025-11-06T01:45:58.707399"
+    "duration_seconds": 96.104273,
+    "timestamp": "2025-11-08T16:51:06.172019"
   },
   "iShares Micro-Cap ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_iShares-Micro-Cap-ETF_20190101_boruta.pkl",
-    "n_features": 106,
-    "n_selected_features": 106,
+    "n_features": 112,
+    "n_selected_features": 112,
     "n_train_samples": 3114,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 68.635249,
-    "timestamp": "2025-11-06T01:47:07.342735"
+    "duration_seconds": 104.306799,
+    "timestamp": "2025-11-08T16:52:50.478950"
   },
   "SPDR Dow Jones Industrial Average ETF": {
     "status": "success",
     "model_path": "saved_models/KMRF/original_labels/us_equity/KMRF_SPDR-Dow-Jones-Industrial-Average-ETF_20190101_boruta.pkl",
-    "n_features": 105,
-    "n_selected_features": 105,
+    "n_features": 110,
+    "n_selected_features": 110,
     "n_train_samples": 5019,
-    "n_test_samples": 938,
+    "n_test_samples": 937,
     "boruta_used": true,
-    "duration_seconds": 110.544525,
-    "timestamp": "2025-11-06T01:08:55.922862"
+    "duration_seconds": 15637.813436,
+    "timestamp": "2025-11-07T08:01:54.539268"
   }
 }

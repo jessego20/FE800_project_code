@@ -1,0 +1,90 @@
+{
+  "Vanguard Total International Stock ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_Vanguard-Total-International-Stock-ETF_20190101_boruta.pkl",
+    "n_features": 112,
+    "n_selected_features": 112,
+    "n_train_samples": 1741,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 44.626204,
+    "timestamp": "2025-11-08T17:02:03.106471"
+  },
+  "Vanguard FTSE Developed Markets ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_Vanguard-FTSE-Developed-Markets-ETF_20190101_boruta.pkl",
+    "n_features": 114,
+    "n_selected_features": 114,
+    "n_train_samples": 2626,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 65.527935,
+    "timestamp": "2025-11-08T17:03:08.634558"
+  },
+  "Vanguard FTSE Emerging Markets ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_Vanguard-FTSE-Emerging-Markets-ETF_20190101_boruta.pkl",
+    "n_features": 116,
+    "n_selected_features": 116,
+    "n_train_samples": 3224,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 89.181423,
+    "timestamp": "2025-11-08T17:04:37.816325"
+  },
+  "Vanguard FTSE Europe ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_Vanguard-FTSE-Europe-ETF_20190101_boruta.pkl",
+    "n_features": 110,
+    "n_selected_features": 110,
+    "n_train_samples": 3224,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 87.668866,
+    "timestamp": "2025-11-08T17:06:05.485632"
+  },
+  "Vanguard FTSE Pacific ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_Vanguard-FTSE-Pacific-ETF_20190101_boruta.pkl",
+    "n_features": 115,
+    "n_selected_features": 115,
+    "n_train_samples": 3224,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 83.718151,
+    "timestamp": "2025-11-08T17:07:29.203923"
+  },
+  "iShares China Large-Cap ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_iShares-China-Large-Cap-ETF_20190101_boruta.pkl",
+    "n_features": 116,
+    "n_selected_features": 116,
+    "n_train_samples": 3329,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 87.25577,
+    "timestamp": "2025-11-08T17:08:56.459836"
+  },
+  "iShares MSCI Japan ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_iShares-MSCI-Japan-ETF_20190101_boruta.pkl",
+    "n_features": 120,
+    "n_selected_features": 120,
+    "n_train_samples": 5484,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 101.966879,
+    "timestamp": "2025-11-08T17:10:38.426941"
+  },
+  "iShares MSCI India ETF": {
+    "status": "success",
+    "model_path": "saved_models/KMRF/original_labels/int_equity/KMRF_iShares-MSCI-India-ETF_20190101_boruta.pkl",
+    "n_features": 102,
+    "n_selected_features": 102,
+    "n_train_samples": 1485,
+    "n_test_samples": 937,
+    "boruta_used": true,
+    "duration_seconds": 34.867055,
+    "timestamp": "2025-11-08T17:11:13.294119"
+  }
+}
