@@ -1174,7 +1174,6 @@ class KMRF:
         self,
         X: Optional[pd.DataFrame] = None,
         test_or_val: str = 'test',
-        return_proba: bool = True
     ) -> Union[pd.DataFrame, np.ndarray]:
         """
         Generate regime predictions for new data.
@@ -1256,7 +1255,18 @@ class KMRF:
             index=X.index,
             columns=[class_names.get(c, f'P(Class_{c})') for c in classes]
         )
-        
+
+        if self.classification_type == 'original':
+            for col in ['P(LV_Bull)', 'P(LV_Bear)', 'P(HV_Bull)', 'P(HV_Bear)']:
+                if col not in result.columns:
+                    result[col] = 0.0  # Fill missing columns with zeros
+            result = result[['P(LV_Bull)', 'P(LV_Bear)', 'P(HV_Bull)', 'P(HV_Bear)']]
+        else:
+            for col in ['P(Bullish)', 'P(Other)', 'P(Bearish)']:
+                if col not in result.columns:
+                    result[col] = 0.0  # Fill missing columns with zeros
+            result = result[['P(Bullish)', 'P(Other)', 'P(Bearish)']]
+
         print(f"✓ Generated probability predictions: {result.shape}")
         if test_or_val.lower() == 'test':
             self.y_test_proba = result
@@ -1279,8 +1289,16 @@ class KMRF:
                 pred_proba = self.y_val_proba
 
         if self.classification_type == 'original':
+            for col in ['P(LV_Bull)', 'P(LV_Bear)', 'P(HV_Bull)', 'P(HV_Bear)']:
+                if col not in pred_proba.columns:
+                    pred_proba[col] = 0.0  # Fill missing columns with zeros
+            pred_proba = pred_proba[['P(LV_Bull)', 'P(LV_Bear)', 'P(HV_Bull)', 'P(HV_Bear)']]
             pred = pred_proba.apply(lambda row: np.argmax(row), axis=1)
         else:
+            for col in ['P(Bullish)', 'P(Other)', 'P(Bearish)']:
+                if col not in pred_proba.columns:
+                    pred_proba[col] = 0.0  # Fill missing columns with zeros
+            pred_proba = pred_proba[['P(Bullish)', 'P(Other)', 'P(Bearish)']]
             pred = pred_proba.apply(lambda row: np.argmax(row)-1, axis=1)
 
         # Get raw price data for test period - aligned with prediction dates
@@ -1298,7 +1316,7 @@ class KMRF:
 
         # Define colors and labels for regimes based on classification type
         if self.classification_type == 'original':
-            colors = {0: 'green', 1: 'lightblue', 2: 'yellow', 3: 'darkred'}
+            colors = {0: 'green', 1: 'blue', 2: 'yellow', 3: 'darkred'}
             labels_dict = {0: 'LV_Bull', 1: 'LV_Bear', 2: 'HV_Bull', 3: 'HV_Bear'}
             prob_cols = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
         else:
@@ -1337,7 +1355,7 @@ class KMRF:
             ax2.fill_between(pred_proba.index, 0, pred_proba['P(LV_Bull)'],
                             alpha=0.7, color='green', label='P(LV Bullish)')
             ax2.fill_between(pred_proba.index, 0, pred_proba['P(LV_Bear)'],
-                            alpha=0.7, color='lightblue', label='P(LV Bearish)')
+                            alpha=0.7, color='blue', label='P(LV Bearish)')
             ax2.fill_between(pred_proba.index, 0, pred_proba['P(HV_Bull)'],
                             alpha=0.7, color='yellow', label='P(HV Bullish)')
             ax2.fill_between(pred_proba.index, 0, pred_proba['P(HV_Bear)'],
