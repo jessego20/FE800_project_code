@@ -108,5 +108,33 @@
     "boruta_used": true,
     "duration_seconds": 51.044995,
     "timestamp": "2025-11-08T17:40:47.388614"
+  },
+  "Silver Futures": {
+    "status": "failed",
+    "error": "use_data_type must be 'master', 'ready', or 'raw', got 'Master'",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_88204/808748472.py\", line 91, in train_kmrf_batch\n    model = kmrf.KMRF(\n        asset_name=asset_name,\n    ...<7 lines>...\n        classification_type=classification_type\n    )\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 135, in __init__\n    raise ValueError(\n        f\"use_data_type must be 'master', 'ready', or 'raw', got '{use_data_type}'\"\n    )\nValueError: use_data_type must be 'master', 'ready', or 'raw', got 'Master'\n",
+    "duration_seconds": 0.000798,
+    "timestamp": "2025-11-11T15:47:33.025084"
+  },
+  "US Dollar": {
+    "status": "failed",
+    "error": "use_data_type must be 'master', 'ready', or 'raw', got 'Master'",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_88204/808748472.py\", line 91, in train_kmrf_batch\n    model = kmrf.KMRF(\n        asset_name=asset_name,\n    ...<7 lines>...\n        classification_type=classification_type\n    )\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 135, in __init__\n    raise ValueError(\n        f\"use_data_type must be 'master', 'ready', or 'raw', got '{use_data_type}'\"\n    )\nValueError: use_data_type must be 'master', 'ready', or 'raw', got 'Master'\n",
+    "duration_seconds": 4.6e-05,
+    "timestamp": "2025-11-11T15:47:33.026186"
+  },
+  "Heating Oil": {
+    "status": "failed",
+    "error": "use_data_type must be 'master', 'ready', or 'raw', got 'Master'",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_88204/808748472.py\", line 91, in train_kmrf_batch\n    model = kmrf.KMRF(\n        asset_name=asset_name,\n    ...<7 lines>...\n        classification_type=classification_type\n    )\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 135, in __init__\n    raise ValueError(\n        f\"use_data_type must be 'master', 'ready', or 'raw', got '{use_data_type}'\"\n    )\nValueError: use_data_type must be 'master', 'ready', or 'raw', got 'Master'\n",
+    "duration_seconds": 2.2e-05,
+    "timestamp": "2025-11-11T15:47:33.026944"
+  },
+  "Lumber Futures": {
+    "status": "failed",
+    "error": "use_data_type must be 'master', 'ready', or 'raw', got 'Master'",
+    "error_trace": "Traceback (most recent call last):\n  File \"/var/folders/gw/n9n80qx50dqb3p299fjcnkzc0000gn/T/ipykernel_88204/808748472.py\", line 91, in train_kmrf_batch\n    model = kmrf.KMRF(\n        asset_name=asset_name,\n    ...<7 lines>...\n        classification_type=classification_type\n    )\n  File \"/Users/jessegoodman/Desktop/Stevens MFE/Sem3/FE800/FE800_project_code/kmrf.py\", line 135, in __init__\n    raise ValueError(\n        f\"use_data_type must be 'master', 'ready', or 'raw', got '{use_data_type}'\"\n    )\nValueError: use_data_type must be 'master', 'ready', or 'raw', got 'Master'\n",
+    "duration_seconds": 1e-05,
+    "timestamp": "2025-11-11T15:47:33.027441"
   }
 }
