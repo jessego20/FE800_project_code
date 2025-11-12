@@ -76,6 +76,7 @@ class KMRF:
         classification_type: str = 'adapted',
         feature_window_size: int = 1,
         feature_asset_classes: Optional[List[str]] = None,
+        cross_asset_specific: Optional[List[str]] = None,
         rf_params: Optional[Dict] = None
     ):
         """
@@ -138,7 +139,8 @@ class KMRF:
         
         # Feature window parameters
         self.feature_window_size = feature_window_size
-        self.feature_asset_classes = feature_asset_classes if feature_asset_classes is not None else [asset_class]
+        self.feature_asset_classes = feature_asset_classes if feature_asset_classes is not None else []
+        self.cross_asset_specific = cross_asset_specific if cross_asset_specific is not None else []
         self.rf_params = rf_params if rf_params is not None else {}
 
         # Data split dates
@@ -362,7 +364,25 @@ class KMRF:
             comm_symbol_name_dict = fmp_comm.set_index('symbol')['name'].to_dict()
             comm_symbol_name_dict.update({'Nickel': 'Nickel'})
 
-            if self.asset_class != 'commodity':
+            universe_symbol_name_dict = {
+                'IVV': 'IVV - iShares Core S&P 500 ETF',
+                'IJH': 'IJH - iShares Core S&P Mid-Cap ETF',
+                'IWM': 'IWM - iShares Russell 2000 ETF',
+                'EFA': 'EFA - iShares MSCI EAFE ETF',
+                'EEM': 'EEM - iShares MSCI Emerging Markets ETF',
+                'AGG': 'AGG - iShares Core U.S. Aggregate Bond ETF',
+                'SPTL': 'SPTL - SPDR Portfolio Long Term Treasury ETF',
+                'HYG': 'HYG - iShares iBoxx $ High Yield Corporate Bond ETF',
+                'SPBO': 'SPBO - SPDR Portfolio Corporate Bond ETF',
+                'IYR': 'IYR - iShares U.S. Real Estate ETF',
+                'DBC': 'DBC - Invesco DB Commodity Index Tracking Fund',
+                'GLD': 'GLD - SPDR Gold Shares',
+            }
+            if self.asset_class == 'universe':
+                raw_price_data = pd.read_csv(BASE_DIR / 'data/processed/universe_etfs.csv', index_col=0, header=[0, 1], parse_dates=True)
+                raw_price_data.index = pd.to_datetime(raw_price_data.index)
+                raw_price_data.rename(columns=universe_symbol_name_dict, level=0, inplace=True)
+            elif self.asset_class != 'commodity':
                 raw_price_data = pd.read_csv(BASE_DIR / 'data/processed/all_etf_data.csv', index_col=0, header=[0, 1], parse_dates=True)
                 raw_price_data.index = pd.to_datetime(raw_price_data.index)
                 raw_price_data.rename(columns=etf_symbol_name_dict, level=0, inplace=True)
@@ -1355,9 +1375,14 @@ class KMRF:
                     cross_features_to_add = self.cross_asset_features.copy()
             else:
                 cross_features_to_add = self.cross_asset_features.copy()
-            
+
+            if self.cross_asset_specific and len(self.cross_asset_specific) > 0:
+                print(f"  Selecting specific assets for cross-asset features: {self.cross_asset_specific}")
+                col_mask = cross_features_to_add.columns.get_level_values(0).isin(self.cross_asset_specific)
+                cross_features_to_add = cross_features_to_add.loc[:, col_mask]
+
             print(f"  Cross-asset features to add: {cross_features_to_add.shape}")
-            print(f"  Assets included: {cross_features_to_add.columns.get_level_values(0).nunique()}")
+            print(f"  Assets included ({cross_features_to_add.columns.get_level_values(0).nunique()}): {cross_features_to_add.columns.get_level_values(0).unique().tolist()}")
             
             # Align cross-asset features to target asset index
             cross_features_aligned = cross_features_to_add.reindex(X.index).ffill()
@@ -1774,7 +1799,8 @@ class KMRF:
                 'max_features': 0.4,
                 'min_weight_fraction_leaf': 0.02,
                 'random_state': self.random_seed,
-                'n_jobs': -1
+                'n_jobs': -1,
+                'class_weight': 'balanced'
             }
         else:    
             default_params = {
@@ -1786,7 +1812,8 @@ class KMRF:
                 'max_features': 0.25,
                 'min_weight_fraction_leaf': 0.045,
                 'random_state': self.random_seed,
-                'n_jobs': -1
+                'n_jobs': -1,
+                'class_weight': 'balanced'
             }
         
         # Update defaults with merged params
@@ -1815,7 +1842,7 @@ class KMRF:
         
         # Train Random Forest
         print(f"\nFitting Random Forest...")
-        self.rf_model = RandomForestClassifier(**default_params, class_weight='balanced')
+        self.rf_model = RandomForestClassifier(**default_params)
         self.rf_model.fit(X_clean.values, y_clean.values)
         
         print(f"\n{'='*80}")
@@ -2078,12 +2105,7 @@ class KMRF:
         # TODO: implement
         pass
 
-    def save_model(
-        self,
-        model_dir: Optional[Union[str, Path]] = None,
-        model_name: Optional[str] = None,
-        boruta_used: bool = False
-    ) -> Path:
+    def save_model(self, model_path: Union[str, Path]) -> Path:
         """
         Save trained KMRF model to disk.
         
@@ -2091,18 +2113,16 @@ class KMRF:
         - Random Forest classifier
         - Selected features (if feature selection was used)
         - Train/val/test splits (X_train, y_train, X_val, X_test)
+        - All model data (features, labels, cross-asset features, etc.)
         - Model metadata (asset class, end_date, classification_type, etc.)
         
         This allows you to load the model later without retraining or re-running feature selection.
         
         Parameters
         ----------
-        model_dir : str or Path, optional
-            Directory to save model. If None, uses 'saved_models/KMRF/{classification_type}_labels/{asset_class}/'
-        model_name : str, optional
-            Model filename. If None, auto-generates name
-        boruta_used : bool, default=False
-            Whether Boruta feature selection was used (adds to filename)
+        model_path : str or Path
+            Full path where the model should be saved (including filename and .pkl extension)
+            Parent directories will be created if they don't exist
             
         Returns
         -------
@@ -2111,31 +2131,20 @@ class KMRF:
             
         Examples
         --------
+        >>> # Save model with explicit path
         >>> kmrf.fit()
-        >>> model_path = kmrf.save_model(boruta_used=True)
-        >>> # Load later: kmrf = KMRF.load_model(model_path)
+        >>> model_path = kmrf.save_model('saved_models/my_kmrf_model.pkl')
+        >>> 
+        >>> # Load later
+        >>> kmrf = KMRF.load_model('saved_models/my_kmrf_model.pkl')
         """
         if self.rf_model is None:
             raise ValueError("No model to save. Train model first with fit().")
         
-        # Set default directory
-        if model_dir is None:
-            model_dir = Path(f'saved_models/KMRF/{self.classification_type}_labels/{self.asset_class}/')
-        else:
-            model_dir = Path(model_dir)
+        model_path = Path(model_path)
         
-        # Create directory if it doesn't exist
-        model_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Auto-generate filename
-        if model_name is None:
-            model_name = f"KMRF_{('-').join(self.asset_name.split())}_{self.end_date}"
-            if boruta_used:
-                model_name += f"_boruta.pkl"
-            else:
-                model_name += f".pkl"
-        
-        model_path = model_dir / model_name
+        # Create parent directory if it doesn't exist
+        model_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Package model data - save everything needed to skip retraining
         model_data = {
@@ -2150,28 +2159,32 @@ class KMRF:
             'validation_start': self.validation_start,
             'validation_end': self.validation_end,
             'test_start': self.test_start,
-            # New parameters
+            # Feature engineering parameters
             'feature_window_size': self.feature_window_size,
             'feature_asset_classes': self.feature_asset_classes,
+            'cross_asset_specific': self.cross_asset_specific,
             'rf_params': self.rf_params,
-            # Save train/val/test splits
+            # Save all data
             'raw_data': self.raw_data,
             'ohlc_data': self.raw_ohlc,
             'features': self.features,
+            'labels': self.labels,
+            'adapted_labels': self.adapted_labels,
             'macro_data': self.macro_data,
             'cross_asset_features': self.cross_asset_features,
+            # Save train/val/test splits
             'X_train': self.X_train,
             'y_train': self.y_train,
             'X_val': self.X_val,
             'X_test': self.X_test,
             'y_val_proba': self.y_val_proba,
             'y_test_proba': self.y_test_proba,
-            'boruta_used': boruta_used
         }
         
         # Save
         print(f"\nSaving model to: {model_path}")
         print(f"  Asset: {self.asset_name}")
+        print(f"  Asset class: {self.asset_class}")
         print(f"  Classification type: {self.classification_type}")
         print(f"  Features: {len(self.selected_features) if self.selected_features else 'all'}")
         print(f"  Training samples: {len(self.X_train) if self.X_train is not None else 0}")
@@ -2185,42 +2198,165 @@ class KMRF:
 
     def pipeline(
         self, 
-        use_boruta: bool = True, 
-        include_macro: bool = True,
-        use_cross_asset_features: bool = True,
-        use_master_files: bool = True
+        optimize: bool = False
     ) -> None:
         """
-        Run the full KMRF pipeline: load data, train model, and evaluate.
+        Run the full KMRF pipeline: load data, prepare features, train model.
+        
+        This method executes the complete training workflow using parameters
+        specified during model initialization (in __init__). It:
+        1. Loads data (raw/ready/master based on use_data_type)
+        2. Computes/loads features for target asset
+        3. Loads cross-asset features (if feature_asset_classes specified)
+        4. Loads macroeconomic data
+        5. Loads KAMA+MSR regime labels
+        6. Adapts labels if classification_type='adapted'
+        7. Prepares training data with feature engineering
+        8. Applies consensus feature selection
+        9. Splits into train/val/test sets
+        10. Trains Random Forest classifier
+        
+        All configuration is read from instance variables set during initialization:
+        - self.use_data_type: Determines data source ('master', 'ready', 'raw')
+        - self.feature_asset_classes: List of asset classes for cross-asset features
+        - self.classification_type: 'adapted' (3-class) or 'original' (4-regime)
+        - self.feature_window_size: Number of time steps to include as features
+        - self.rf_params: Random Forest hyperparameters
         
         Parameters
         ----------
-        use_boruta : bool, default=True
-            Whether to use Boruta feature selection
-        include_macro : bool, default=True
-            Whether to include macroeconomic features
-        use_cross_asset_features : bool, default=True
-            Whether to use cross-asset features from feature_asset_classes
-        use_master_files : bool, default=True
-            Whether to use master_df.csv and master_label_df.csv
-            If False, uses legacy ready data files
+        optimize : bool, default=False
+            Whether to run hyperparameter optimization
+            If False, runs the full pipeline with parameters as set by initialization
+            If True, runs Optuna optimization to find best hyperparameters (TODO: implement)
+        
+        Notes
+        -----
+        Legacy Boruta feature selection is no longer used in favor of consensus selection.
+        Consensus combines RF importance, variance threshold, and mutual information
+        for faster, more robust feature selection.
+        
+        Examples
+        --------
+        >>> # Initialize with configuration
+        >>> kmrf = KMRF(
+        ...     asset_name='SPDR S&P 500 ETF',
+        ...     asset_class='us_equity',
+        ...     use_data_type='master',
+        ...     feature_asset_classes=['us_equity', 'commodity'],
+        ...     classification_type='adapted',
+        ...     feature_window_size=1
+        ... )
+        >>> 
+        >>> # Run complete pipeline
+        >>> kmrf.pipeline()
+        >>> 
+        >>> # Model is now trained and ready for predictions
+        >>> predictions = kmrf.predict()
         """
+        if optimize:
+            # TODO: Implement hyperparameter optimization workflow
+            # This should:
+            # 1. Set up Optuna study with appropriate search spaces
+            # 2. Define objective function (e.g., Sortino ratio on validation set)
+            # 3. Run optimization trials
+            # 4. Update model with best parameters
+            # 5. Retrain on full training set with optimal hyperparameters
+            raise NotImplementedError(
+                "Hyperparameter optimization (optimize=True) is not yet implemented. "
+                "This will be added in a future update to support Optuna-based "
+                "optimization of RF parameters, feature selection parameters, and "
+                "strategy parameters."
+            )
+        
+        print(f"\n{'='*80}")
+        print(f"KMRF PIPELINE FOR {self.asset_name}")
+        print(f"{'='*80}")
+        print(f"Asset Class: {self.asset_class}")
+        print(f"Classification Type: {self.classification_type}")
+        print(f"Data Type: {self.use_data_type}")
+        print(f"Feature Asset Classes: {self.feature_asset_classes}")
+        print(f"Feature Window Size: {self.feature_window_size}")
+        print(f"{'='*80}")
+        
+        # Step 1: Load data based on use_data_type
+        print(f"\n[Step 1/10] Loading Data...")
+        use_master_files = (self.use_data_type == 'master')
         raw_or_ready_data = self.load_data(use_master_df=use_master_files)
+        
+        # Step 2: Get/compute features
+        print(f"\n[Step 2/10] Computing Features...")
         features = self.get_features()
+        
+        # Step 3: Load KAMA+MSR labels
+        print(f"\n[Step 3/10] Loading KAMA+MSR Labels...")
         kama_msr_labels = self.load_kama_msr_labels(use_master_label_df=use_master_files)
+        
+        # Step 4: Adapt labels if needed
         if self.classification_type == 'adapted':
+            print(f"\n[Step 4/10] Adapting Labels (4-regime → 3-class)...")
             adapted_labels = self.adapt_regime_labels(kama_msr_labels)
+        else:
+            print(f"\n[Step 4/10] Using Original 4-Regime Labels...")
+        
+        # Step 5-9: Prepare training data (includes cross-asset, macro, feature selection, split)
+        print(f"\n[Step 5-9/10] Preparing Training Data...")
+        print(f"  - Loading cross-asset features: {len(self.feature_asset_classes) > 1}")
+        print(f"  - Including macroeconomic data: True")
+        print(f"  - Feature selection method: Consensus (RF importance + variance + MI)")
+        print(f"  - Train/val/test split: Yes")
+        
+        # Determine if cross-asset features should be used
+        use_cross_asset = len(self.feature_asset_classes) > 0
+        
         X_train, y_train = self.prepare_training_data(
-            include_macro=include_macro,
-            use_cross_asset_features=use_cross_asset_features,
-            select_features=use_boruta,
-            boruta_params={'max_iter': 100},
+            include_macro=True,
+            use_cross_asset_features=use_cross_asset,
+            use_master_df=use_master_files,
+            select_features=False,  # We'll do consensus selection separately
             split_data=True
         )
+        
+        # Apply consensus feature selection on training data
+        print(f"\n[Consensus Feature Selection]")
         self.fit()
+        selected_features, vote_df, all_methods = self.consensus_feature_selection(
+            X_train=self.X_train,
+            y_train=self.y_train,
+            min_votes=2,
+            variance_threshold=0.01,
+            cumulative_importance_threshold=0.95,
+            mi_top_pct=0.3
+        )
+        
+        # Apply selected features to all splits
+        print(f"\nApplying selected features to all data splits...")
+        self.X_train = self.X_train[selected_features]
+        if self.X_val is not None and len(self.X_val) > 0:
+            self.X_val = self.X_val[selected_features]
+        if self.X_test is not None and len(self.X_test) > 0:
+            self.X_test = self.X_test[selected_features]
+        
+        print(f"  ✓ Training: {self.X_train.shape}")
+        if self.X_val is not None:
+            print(f"  ✓ Validation: {self.X_val.shape}")
+        if self.X_test is not None:
+            print(f"  ✓ Test: {self.X_test.shape}")
+        
+        # Step 10: Train Random Forest
+        print(f"\n[Step 10/10] Training Random Forest Classifier...")
+        self.fit()
+        
+        print(f"\n{'='*80}")
+        print(f"PIPELINE COMPLETE")
+        print(f"{'='*80}")
+        print(f"✓ Model trained and ready for predictions")
+        print(f"✓ Use predict() to generate regime probabilities")
+        print(f"✓ Use save_model() to persist trained model")
+        print(f"{'='*80}\n")
 
     @classmethod
-    def load_model(cls, model_path: Union[str, Path], use_data_type: str = 'ready', verbose: bool = False) -> 'KMRF':
+    def load_model(cls, model_path: Union[str, Path], verbose: bool = False) -> 'KMRF':
         """
         Load a saved KMRF model.
         
@@ -2228,6 +2364,7 @@ class KMRF:
         - Trained Random Forest classifier
         - Selected features (if feature selection was used)
         - Train/val/test data splits
+        - All model data (features, labels, cross-asset features, etc.)
         - All model metadata
         
         After loading, you can immediately use predict() without retraining.
@@ -2235,12 +2372,9 @@ class KMRF:
         Parameters
         ----------
         model_path : str or Path
-            Path to saved model file
-        use_data_type : str, default='ready'
-            Type of data to use when initializing:
-            - 'master': Load from master_df.csv
-            - 'ready': Load from pre-computed features in 'ready' folder
-            - 'raw': Compute features from raw OHLC data (not yet implemented)
+            Path to saved model file (.pkl)
+        verbose : bool, default=False
+            If True, prints detailed information about the loaded model
             
         Returns
         -------
@@ -2250,14 +2384,13 @@ class KMRF:
         Examples
         --------
         >>> # Load a previously trained model
-        >>> kmrf = KMRF.load_model('saved_models/KMRF/adapted_labels/us_equity/KMRF_SPY_20190101_boruta.pkl')
-        >>> 
-        >>> # Load data for prediction period
-        >>> kmrf.load_data()
-        >>> features = kmrf.get_features()
+        >>> kmrf = KMRF.load_model('saved_models/my_kmrf_model.pkl')
         >>> 
         >>> # Generate predictions immediately (no training needed)
-        >>> predictions = kmrf.predict(kmrf.X_test, return_proba=True)
+        >>> predictions = kmrf.predict()
+        >>> 
+        >>> # Or load with verbose output
+        >>> kmrf = KMRF.load_model('saved_models/my_kmrf_model.pkl', verbose=True)
         """
         model_path = Path(model_path)
         
@@ -2274,31 +2407,37 @@ class KMRF:
             model_data = pickle.load(f)
         
         # Create instance with saved parameters
+        # Note: use_data_type is inferred from saved data presence
         kmrf = cls(
             asset_name=model_data['asset_name'],
             asset_class=model_data['asset_class'],
             end_date=model_data['end_date'],
-            use_data_type=use_data_type,
+            use_data_type='master',  # Default, will be overridden by restored data
             validation_start=model_data.get('validation_start'),
             validation_end=model_data.get('validation_end'),
             test_start=model_data.get('test_start'),
-            random_seed=model_data.get('random_seed', 42),
+            random_seed=model_data.get('random_seed', 1010),
             classification_type=model_data.get('classification_type', 'adapted'),
             feature_window_size=model_data.get('feature_window_size', 1),
             feature_asset_classes=model_data.get('feature_asset_classes'),
+            cross_asset_specific=model_data.get('cross_asset_specific'),
             rf_params=model_data.get('rf_params')
         )
         
         # Restore model components
         kmrf.rf_model = model_data['rf_model']
-        kmrf.selected_features = model_data['selected_features']
+        kmrf.selected_features = model_data.get('selected_features')
         
-        # Restore train/val/test splits
+        # Restore all data
         kmrf.raw_data = model_data.get('raw_data')
         kmrf.raw_ohlc = model_data.get('ohlc_data')
         kmrf.features = model_data.get('features')
+        kmrf.labels = model_data.get('labels')
+        kmrf.adapted_labels = model_data.get('adapted_labels')
         kmrf.macro_data = model_data.get('macro_data')
         kmrf.cross_asset_features = model_data.get('cross_asset_features')
+        
+        # Restore train/val/test splits
         kmrf.X_train = model_data.get('X_train')
         kmrf.y_train = model_data.get('y_train')
         kmrf.X_val = model_data.get('X_val')
@@ -2313,7 +2452,8 @@ class KMRF:
             print(f"  Classification type: {kmrf.classification_type}")
             print(f"  Training end date: {kmrf.end_date}")
             print(f"  Features: {len(kmrf.selected_features) if kmrf.selected_features else 'all'}")
-            print(f"  Boruta used: {model_data.get('boruta_used', 'Unknown')}")
+            print(f"  Feature window size: {kmrf.feature_window_size}")
+            print(f"  Feature asset classes: {kmrf.feature_asset_classes}")
 
         if verbose:
             if kmrf.X_train is not None:
