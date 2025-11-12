@@ -1978,7 +1978,7 @@ class KMRF:
             for col in ['P(Bullish)', 'P(Other)', 'P(Bearish)']:
                 if col not in pred_proba.columns:
                     pred_proba[col] = 0.0  # Fill missing columns with zeros
-            pred_proba = pred_proba[['P(Bullish)', 'P(Other)', 'P(Bearish)']]
+            pred_proba = pred_proba[['P(Bearish)', 'P(Other)', 'P(Bullish)']]
             pred = pred_proba.apply(lambda row: np.argmax(row)-1, axis=1)
 
         # Get raw price data for test period - aligned with prediction dates
