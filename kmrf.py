@@ -1963,8 +1963,8 @@ class KMRF:
         Notes
         -----
         Predictions should be interpreted with CONTRARIAN strategy (per paper):
-        - High P(Bullish) → SHORT signal (market overbought)
-        - High P(Bearish) → LONG signal (market oversold)  
+        - High P(Bull) → SHORT signal (market overbought)
+        - High P(Bear) → LONG signal (market oversold)  
         - High P(Other) → CLOSE position
         
         Examples
@@ -2012,7 +2012,7 @@ class KMRF:
         if self.classification_type == 'adapted':
             # For adapted classification, XGBoost outputs probabilities for the classes it learned
             # We need to map them back to the original regime numbers using inverse_label_mapping
-            regime_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
+            regime_names = {-1: 'P(Bear)', 0: 'P(Other)', 1: 'P(Bull)'}
             
             # XGBoost's classes_ gives us the consecutive integers [0, 1, 2, ...]
             # Map them back to original regime numbers, then to regime names
@@ -2084,10 +2084,10 @@ class KMRF:
             pred_proba = pred_proba[['P(LV_Bull)', 'P(LV_Bear)', 'P(HV_Bull)', 'P(HV_Bear)']]
             pred = pred_proba.apply(lambda row: np.argmax(row), axis=1)
         else:
-            for col in ['P(Bullish)', 'P(Other)', 'P(Bearish)']:
+            for col in ['P(Bull)', 'P(Other)', 'P(Bear)']:
                 if col not in pred_proba.columns:
                     pred_proba[col] = 0.0  # Fill missing columns with zeros
-            pred_proba = pred_proba[['P(Bearish)', 'P(Other)', 'P(Bullish)']]
+            pred_proba = pred_proba[['P(Bear)', 'P(Other)', 'P(Bull)']]
             pred = pred_proba.apply(lambda row: np.argmax(row)-1, axis=1)
 
         # Get raw price data for test period - aligned with prediction dates
@@ -2111,7 +2111,7 @@ class KMRF:
         else:
             colors = {1: 'green', 0: 'grey', -1: 'darkred'}
             labels_dict = {1: 'Bullish', 0: 'Other', -1: 'Bearish'}
-            prob_cols = {1: 'P(Bullish)', 0: 'P(Other)', -1: 'P(Bearish)'}
+            prob_cols = {1: 'P(Bull)', 0: 'P(Other)', -1: 'P(Bear)'}
 
 
         # Shade regime periods
@@ -2151,12 +2151,12 @@ class KMRF:
                             alpha=0.7, color='darkred', label='P(HV Bearish)')
         else:
             # Adapted 3-regime system
-            ax2.fill_between(pred_proba.index, 0, pred_proba['P(Bullish)'],
-                            alpha=0.7, color='green', label='P(Bullish)')
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(Bull)'],
+                            alpha=0.7, color='green', label='P(Bull)')
             ax2.fill_between(pred_proba.index, 0, pred_proba['P(Other)'],
                             alpha=0.7, color='gray', label='P(Other)')
-            ax2.fill_between(pred_proba.index, 0, pred_proba['P(Bearish)'],
-                            alpha=0.7, color='darkred', label='P(Bearish)')
+            ax2.fill_between(pred_proba.index, 0, pred_proba['P(Bear)'],
+                            alpha=0.7, color='darkred', label='P(Bear)')
 
         ax2.set_xlabel('Date', fontsize=12)
         ax2.set_ylabel('Probability', fontsize=12)
