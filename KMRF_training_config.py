@@ -4,7 +4,7 @@ Configuration file for KMRF model training and optimization.
 This file defines all configuration parameters for:
 - Asset universe and cross-asset feature groups
 - Train/validation/test date splits
-- RF hyperparameters (paper defaults and search ranges)
+- XGBoost hyperparameters (paper defaults and search ranges)
 - Transaction cost assumptions
 - Optimization settings
 
@@ -12,10 +12,10 @@ Usage:
     from config import Config
     config = Config()
     assets = config.ASSETS
-    rf_params = config.DEFAULT_RF_PARAMS
+    xgb_params = config.DEFAULT_XGB_PARAMS
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 import pandas as pd
 
@@ -28,7 +28,7 @@ class KMRF_Training_Config:
     a KMRF model for a single asset, including:
     - Asset-specific parameters (asset class, cross-asset features, transaction costs)
     - Date ranges for train/val/test splits
-    - RF hyperparameters (defaults and search spaces)
+    - XGBoost hyperparameters (defaults and search spaces)
     - Feature engineering settings
     - Strategy and optimization parameters
     
@@ -45,7 +45,7 @@ class KMRF_Training_Config:
             use_data_type='master',
             feature_window_size=1
         )
-        rf_params = config.get_rf_params()
+        xgb_params = config.get_xgb_params()
         cross_features = config.get_cross_asset_features()
     """
     
@@ -55,6 +55,10 @@ class KMRF_Training_Config:
     
     # Asset classes available in master_df.csv
     ASSET_CLASSES = ['us_equity', 'commodity', 'int_equity']
+    
+    # Valid asset classes for feature_asset_classes parameter
+    # (includes 'universe' in addition to standard asset classes)
+    VALID_FEATURE_ASSET_CLASSES = ['us_equity', 'commodity', 'int_equity', 'universe']
     
     # Specific assets to train (full names as they appear in master_df.csv)
     # Organized by asset class for clarity
@@ -172,46 +176,49 @@ class KMRF_Training_Config:
     ]
     
     # =========================================================================
-    # RANDOM FOREST HYPERPARAMETERS
+    # XGBOOST HYPERPARAMETERS
     # =========================================================================
     
-    # Default RF hyperparameters from paper (Table 2)
-    EQUITY_DEFAULT_RF_PARAMS = {
+    # Default XGBoost hyperparameters (converted from RF paper defaults)
+    EQUITY_DEFAULT_XGB_PARAMS = {
         'n_estimators': 220,
         'max_depth': 13,
-        'min_samples_split': 76,
-        'min_samples_leaf': 95,
-        'max_samples': 0.3649,
-        'max_features': 0.2481,
-        'min_weight_fraction_leaf': 0.0454,
+        'learning_rate': 0.1,
+        'subsample': 0.8,
+        'colsample_bytree': 0.25,
+        'min_child_weight': 95,
+        'gamma': 0.045,
         'random_state': 1010,
         'n_jobs': -1,
-        'class_weight': 'balanced'  # Can be 'balanced', 'balanced_subsample', or None
+        'tree_method': 'hist',
+        'enable_categorical': False
     }
 
-    COMMODITY_DEFAULT_RF_PARAMS = {
+    COMMODITY_DEFAULT_XGB_PARAMS = {
         'n_estimators': 280,
         'max_depth': 3,
-        'min_samples_split': 18,
-        'min_samples_leaf': 95,
-        'max_samples': 0.1247,
-        'max_features': 0.4001,
-        'min_weight_fraction_leaf': 0.0213,
+        'learning_rate': 0.1,
+        'subsample': 0.8,
+        'colsample_bytree': 0.4,
+        'min_child_weight': 95,
+        'gamma': 0.02,
         'random_state': 1010,
         'n_jobs': -1,
-        'class_weight': 'balanced'  # Can be 'balanced', 'balanced_subsample', or None
+        'tree_method': 'hist',
+        'enable_categorical': False
     }
 
     # Hyperparameter search ranges for Optuna optimization
-    RF_SEARCH_SPACE = {
+    XGB_SEARCH_SPACE = {
         'n_estimators': {'type': 'int', 'low': 10, 'high': 300, 'step': 10},
         'max_depth': {'type': 'int', 'low': 1, 'high': 20},
-        'min_samples_split': {'type': 'int', 'low': 1, 'high': 100, 'step': 5},
-        'min_samples_leaf': {'type': 'int', 'low': 1, 'high': 100, 'step': 5},
-        'max_samples': {'type': 'float', 'low': 0.1, 'high': 1.0, 'step': 0.05},
-        'max_features': {'type': 'float', 'low': 0.2, 'high': 1.0, 'step': 0.05},
-        'min_weight_fraction_leaf': {'type': 'float', 'low': 0.0, 'high': 0.05, 'step': 0.005},
-        'class_weight': {'type': 'categorical', 'choices': [None, 'balanced', 'balanced_subsample']}
+        'learning_rate': {'type': 'float', 'low': 0.01, 'high': 0.3, 'log': True},
+        'subsample': {'type': 'float', 'low': 0.5, 'high': 1.0},
+        'colsample_bytree': {'type': 'float', 'low': 0.1, 'high': 1.0},
+        'min_child_weight': {'type': 'int', 'low': 1, 'high': 100, 'step': 5},
+        'gamma': {'type': 'float', 'low': 0.0, 'high': 0.5, 'step': 0.01},
+        'reg_alpha': {'type': 'float', 'low': 0.0, 'high': 1.0},
+        'reg_lambda': {'type': 'float', 'low': 0.0, 'high': 1.0}
     }
     
     # =========================================================================
@@ -360,7 +367,11 @@ class KMRF_Training_Config:
         asset_name: str,
         classification_type: str = 'original',
         use_data_type: str = 'master',
-        feature_window_size: int = 1
+        feature_window_size: int = 1,
+        feature_asset_classes: Optional[List[str]] = None,
+        cross_asset_specific: Optional[List[str]] = None,
+        use_boruta_selection: bool = False,
+        use_consensus_selection: bool = False
     ):
         """
         Initialize configuration for a specific asset.
@@ -370,6 +381,11 @@ class KMRF_Training_Config:
             classification_type: 'original' (4-regime) or 'adapted' (3-class)
             use_data_type: 'master' or 'individual' (data source)
             feature_window_size: Size of feature window (default=1)
+            feature_asset_classes: List of asset class names to use as cross-asset features
+                                  (default=None, uses preset defaults based on asset)
+            cross_asset_specific: List of specific cross-asset tickers to include (default=None, uses all)
+            use_boruta_selection: Whether to use Boruta feature selection (default=False)
+            use_consensus_selection: Whether to use consensus feature selection (default=False)
         
         Raises:
             ValueError: If asset_name is not found in ASSETS configuration
@@ -387,30 +403,63 @@ class KMRF_Training_Config:
         self.use_data_type = use_data_type
         self.feature_window_size = feature_window_size
         
+        # Validate and store cross_asset_specific
+        if cross_asset_specific is not None:
+            # Validate that all provided asset names are valid
+            all_valid_assets = self.get_all_assets()
+            invalid_assets = [asset for asset in cross_asset_specific 
+                            if asset not in all_valid_assets]
+            if invalid_assets:
+                raise ValueError(
+                    f"Invalid asset names in cross_asset_specific: {invalid_assets}. "
+                    f"Must be valid asset names from ASSETS configuration. "
+                    f"Use get_all_assets() to see available assets."
+                )
+            self.cross_asset_specific = cross_asset_specific
+        else:
+            self.cross_asset_specific = []
+            
+        self.use_boruta_selection = use_boruta_selection
+        self.use_consensus_selection = use_consensus_selection
+        
         # Derive asset class
         self.asset_class = self._get_asset_class_for_name(asset_name)
         
-        # Set asset-specific configurations
-        self._cross_asset_features = self._CROSS_ASSET_FEATURES_MAP.get(asset_name, [])
+        # Set feature_asset_classes: use provided value, or fall back to preset defaults
+        if feature_asset_classes is not None:
+            # Validate that all provided classes are valid
+            invalid_classes = [cls for cls in feature_asset_classes 
+                             if cls not in self.VALID_FEATURE_ASSET_CLASSES]
+            if invalid_classes:
+                raise ValueError(
+                    f"Invalid asset classes in feature_asset_classes: {invalid_classes}. "
+                    f"Valid classes are: {self.VALID_FEATURE_ASSET_CLASSES}"
+                )
+            self._feature_asset_classes = feature_asset_classes
+        else:
+            # Use preset defaults from the map if not explicitly provided
+            self._feature_asset_classes = self._CROSS_ASSET_FEATURES_MAP.get(asset_name, [])
+        
+        # Set transaction costs based on asset class
         self._transaction_costs = self.TRANSACTION_COSTS.get(
             self.asset_class, 
             0
         )
         
-        # Set RF parameters based on asset class
+        # Set XGB parameters based on asset class
         if self.asset_class == 'us_equity':
-            self._default_rf_params = self.EQUITY_DEFAULT_RF_PARAMS.copy()
+            self._default_xgb_params = self.EQUITY_DEFAULT_XGB_PARAMS.copy()
         elif self.asset_class == 'commodity':
-            self._default_rf_params = self.COMMODITY_DEFAULT_RF_PARAMS.copy()
+            self._default_xgb_params = self.COMMODITY_DEFAULT_XGB_PARAMS.copy()
         elif self.asset_class == 'int_equity':
             # International equity uses equity defaults
-            self._default_rf_params = self.EQUITY_DEFAULT_RF_PARAMS.copy()
+            self._default_xgb_params = self.EQUITY_DEFAULT_XGB_PARAMS.copy()
         elif self.asset_class == 'universe':
             # Universe uses equity defaults
-            self._default_rf_params = self.EQUITY_DEFAULT_RF_PARAMS.copy()
+            self._default_xgb_params = self.EQUITY_DEFAULT_XGB_PARAMS.copy()
         else:
             # Fallback to equity defaults
-            self._default_rf_params = self.EQUITY_DEFAULT_RF_PARAMS.copy()
+            self._default_xgb_params = self.EQUITY_DEFAULT_XGB_PARAMS.copy()
     
     # =========================================================================
     # CLASS METHODS (STATIC ASSET INFORMATION)
@@ -466,21 +515,38 @@ class KMRF_Training_Config:
         """Get the feature window size."""
         return self.feature_window_size
     
-    def get_cross_asset_features(self) -> List[str]:
+    def get_feature_asset_classes(self) -> List[str]:
         """Get cross-asset feature classes for this asset."""
-        return self._cross_asset_features.copy()
+        return self._feature_asset_classes.copy()
+    
+    # Backwards compatibility alias
+    def get_cross_asset_features(self) -> List[str]:
+        """Get cross-asset feature classes for this asset (alias for get_feature_asset_classes)."""
+        return self.get_feature_asset_classes()
+    
+    def get_cross_asset_specific(self) -> List[str]:
+        """Get specific cross-asset tickers to include."""
+        return self.cross_asset_specific.copy()
+    
+    def get_use_boruta_selection(self) -> bool:
+        """Get whether to use Boruta feature selection."""
+        return self.use_boruta_selection
+    
+    def get_use_consensus_selection(self) -> bool:
+        """Get whether to use consensus feature selection."""
+        return self.use_consensus_selection
     
     def get_transaction_costs(self) -> float:
         """Get transaction cost parameters for this asset."""
         return self._transaction_costs
     
-    def get_rf_params(self) -> Dict:
-        """Get default RF hyperparameters for this asset."""
-        return self._default_rf_params.copy()
+    def get_xgb_params(self) -> Dict:
+        """Get default XGB hyperparameters for this asset."""
+        return self._default_xgb_params.copy()
     
-    def get_rf_search_space(self) -> Dict:
-        """Get RF hyperparameter search space."""
-        return self.RF_SEARCH_SPACE.copy()
+    def get_xgb_search_space(self) -> Dict:
+        """Get XGB hyperparameter search space."""
+        return self.XGB_SEARCH_SPACE.copy()
     
     def get_consensus_params(self) -> Dict:
         """Get consensus feature selection parameters."""
@@ -590,9 +656,12 @@ class KMRF_Training_Config:
             'classification_type': self.classification_type,
             'use_data_type': self.use_data_type,
             'feature_window_size': self.feature_window_size,
-            'cross_asset_features': self._cross_asset_features,
+            'feature_asset_classes': self._feature_asset_classes,
+            'cross_asset_specific': self.cross_asset_specific,
+            'use_boruta_selection': self.use_boruta_selection,
+            'use_consensus_selection': self.use_consensus_selection,
             'transaction_costs': self._transaction_costs,
-            'rf_params': self._default_rf_params,
+            'xgb_params': self._default_xgb_params,
             'date_ranges': self.get_date_ranges(),
             'regime_names': self.get_regime_names(),
             'consensus_params': self.get_consensus_params(),
@@ -615,7 +684,11 @@ class KMRF_Training_Config:
         
         print(f"\n🔧 FEATURE SETTINGS:")
         print(f"  Feature Window Size: {self.feature_window_size}")
-        print(f"  Cross-Asset Features: {self._cross_asset_features}")
+        print(f"  Feature Asset Classes: {self._feature_asset_classes}")
+        if self.cross_asset_specific:
+            print(f"  Specific Cross-Assets: {self.cross_asset_specific}")
+        print(f"  Boruta Selection: {self.use_boruta_selection}")
+        print(f"  Consensus Selection: {self.use_consensus_selection}")
         
         print(f"\n📅 DATE RANGES:")
         print(f"  KAMA+MSR End Date: {self.END_DATE}")
@@ -623,9 +696,9 @@ class KMRF_Training_Config:
         print(f"  Validation: {self.VALIDATION_START.date()} to {self.VALIDATION_END.date()}")
         print(f"  Test: {self.TEST_START.date()} onwards")
         
-        print(f"\n🌲 RF HYPERPARAMETERS:")
-        for key, value in self._default_rf_params.items():
-            if key not in ['random_state', 'n_jobs']:
+        print(f"\n🚀 XGB HYPERPARAMETERS:")
+        for key, value in self._default_xgb_params.items():
+            if key not in ['random_state', 'n_jobs', 'tree_method', 'enable_categorical']:
                 print(f"  {key}: {value}")
         
         print(f"\n💰 TRANSACTION COSTS:")

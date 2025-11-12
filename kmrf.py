@@ -1,14 +1,16 @@
 """
-KMRF (KAMA+MSR+RF) - Regime Prediction Model
+KMRF (KAMA+MSR+XGB) - Regime Prediction Model
 
 This module implements the KMRF regime prediction model, which combines:
 - KAMA (Kaufman's Adaptive Moving Average) for trend detection
 - MSR (Markov-Switching Regression) for volatility regime detection
-- RF (Random Forest) for ex-ante regime prediction
+- XGB (XGBoost) for ex-ante regime prediction
 
 Based on the papers by Pomorski & Gorse:
 - "Improving Portfolio Performance Using a Novel Method for Predicting Financial Regimes"
 - "Multi-Period Portfolio Optimisation Using a Regime-Switching Predictive Framework"
+
+Modified to use XGBoost instead of Random Forest for improved performance.
 """
 
 import pandas as pd
@@ -38,7 +40,7 @@ BASE_DIR = Path(__file__).parent.resolve()
 
 class KMRF:
     """
-    KMRF: KAMA+MSR+RF Regime Prediction Model
+    KMRF: KAMA+MSR+XGB Regime Prediction Model
     
     This class handles the complete pipeline for regime prediction including:
     - Loading multi-asset data from CSV files
@@ -47,7 +49,7 @@ class KMRF:
     - Loading KAMA+MSR regime labels from saved models
     - Optionally adapting 4-regime labels to 3-class KMRF labels
     - Feature selection using Boruta algorithm
-    - Random Forest training for regime prediction
+    - XGBoost training for regime prediction
     - Performance evaluation
     
     Classification Types:
@@ -77,7 +79,9 @@ class KMRF:
         feature_window_size: int = 1,
         feature_asset_classes: Optional[List[str]] = None,
         cross_asset_specific: Optional[List[str]] = None,
-        rf_params: Optional[Dict] = None
+        xgb_params: Optional[Dict] = None,
+        use_boruta_selection: bool = False,
+        use_consensus_selection: bool = False
     ):
         """
         Initialize the KMRF model for a specific asset.
@@ -120,15 +124,27 @@ class KMRF:
             List of asset class names to use as input features.
             If None, uses only the target asset's own features.
             Example: ['us_equity', 'int_equity', 'commodity']
-        rf_params : dict, optional
-            Random Forest hyperparameters to override defaults.
+        xgb_params : dict, optional
+            XGBoost hyperparameters to override defaults.
             Example: {'n_estimators': 200, 'max_depth': 10}
+        use_boruta_selection : bool, default=False
+            If True, use Boruta algorithm for feature selection.
+            If both use_boruta_selection and use_consensus_selection are True,
+            consensus selection will be used (takes precedence).
+        use_consensus_selection : bool, default=False
+            If True, use consensus feature selection (combining multiple methods).
+            This takes precedence over Boruta selection if both are True.
         """
         self.asset_name = asset_name
         self.asset_class = asset_class
         self.classification_type = classification_type
         self.end_date = end_date
         self.random_seed = random_seed
+        self.use_data_type = use_data_type
+        
+        # Feature selection flags
+        self.use_boruta_selection = use_boruta_selection
+        self.use_consensus_selection = use_consensus_selection
         self.use_data_type = use_data_type
         
         # Validate use_data_type
@@ -141,7 +157,7 @@ class KMRF:
         self.feature_window_size = feature_window_size
         self.feature_asset_classes = feature_asset_classes if feature_asset_classes is not None else []
         self.cross_asset_specific = cross_asset_specific if cross_asset_specific is not None else []
-        self.rf_params = rf_params if rf_params is not None else {}
+        self.xgb_params = xgb_params if xgb_params is not None else {}
 
         # Data split dates
         self.validation_start = pd.to_datetime(validation_start)
@@ -204,9 +220,13 @@ class KMRF:
 
         # Model components
         self.feature_selector = None
-        self.rf_model = None
+        self.xgb_model = None
         self.scaler = None
         self.performance_metrics: Dict = {}
+        
+        # Label mapping for XGBoost (adapted classification uses -1, 0, 1 but XGBoost needs 0, 1, 2)
+        self._label_mapping: Optional[Dict] = None
+        self._inverse_label_mapping: Optional[Dict] = None
         
         print(f"KMRF model initialized")
         print(f"  Asset: {self.asset_name}")
@@ -221,8 +241,9 @@ class KMRF:
         print(f"  Random seed: {self.random_seed}")
         print(f"  Feature window size: {self.feature_window_size} days")
         print(f"  Feature asset classes: {self.feature_asset_classes}")
-        if self.rf_params:
-            print(f"  Custom RF parameters: {self.rf_params}")
+        print(f"  Feature selection: Boruta={self.use_boruta_selection}, Consensus={self.use_consensus_selection}")
+        if self.xgb_params:
+            print(f"  Custom XGB parameters: {self.xgb_params}")
 
     def set_raw_ohlc(self, data: Optional[pd.DataFrame] = None, use_master_df: bool = False):
         if data is not None:
@@ -983,14 +1004,14 @@ class KMRF:
         
         all_methods = {}
         
-        # Method 1: Built-in RF importance (instant)
-        print(f"\nMethod 1: RF Feature Importance (Cumulative {cumulative_importance_threshold*100:.0f}%)")
-        if self.rf_model is None:
+        # Method 1: Built-in XGB importance (instant)
+        print(f"\nMethod 1: XGB Feature Importance (Cumulative {cumulative_importance_threshold*100:.0f}%)")
+        if self.xgb_model is None:
             raise ValueError("Model must be trained first. Call fit() before consensus_feature_selection()")
         
         imp_df = pd.DataFrame({
             'feature': X_train_flat.columns,
-            'importance': self.rf_model.feature_importances_
+            'importance': self.xgb_model.feature_importances_
         }).sort_values('importance', ascending=False)
         imp_df['cumulative'] = imp_df['importance'].cumsum() / imp_df['importance'].sum()
         selected_imp_flat = set(imp_df[imp_df['cumulative'] <= cumulative_importance_threshold]['feature'])
@@ -1735,12 +1756,12 @@ class KMRF:
         self,
         X: Optional[pd.DataFrame] = None,
         y: Optional[pd.DataFrame] = None,
-        rf_params: Optional[Dict] = None
+        xgb_params: Optional[Dict] = None
     ) -> 'KMRF':
         """
-        Fit Random Forest classifier for regime prediction.
+        Fit XGBoost classifier for regime prediction.
         
-        This method trains the RF component of the KMRF model using prepared features
+        This method trains the XGB component of the KMRF model using prepared features
         and adapted labels. The trained model can then generate ex-ante regime predictions.
         
         Parameters
@@ -1749,13 +1770,13 @@ class KMRF:
             Feature matrix. If None, uses output from prepare_training_data()
         y : pd.DataFrame, optional
             Target labels. If None, uses output from prepare_training_data()
-        rf_params : dict, optional
-            Random Forest hyperparameters. Defaults based on paper Table 2:
+        xgb_params : dict, optional
+            XGBoost hyperparameters. Defaults based on paper Table 2:
             - n_estimators: 100-300
             - max_depth: 1-20
-            - min_samples_split: 1-100
-            - min_samples_leaf: 1-100
-            If provided, overrides instance-level rf_params.
+            - learning_rate: 0.01-0.3
+            - subsample: 0.5-1.0
+            If provided, overrides instance-level xgb_params.
             
         Returns
         -------
@@ -1770,56 +1791,58 @@ class KMRF:
         Examples
         --------
         >>> kmrf.fit()  # Uses all training data
-        >>> kmrf.fit(rf_params={'n_estimators': 200})  # Override RF params
+        >>> kmrf.fit(xgb_params={'n_estimators': 200})  # Override XGB params
         """
-        from sklearn.ensemble import RandomForestClassifier
+        from xgboost import XGBClassifier
         
         if X is None or y is None:
             X = self.X_train
             y = self.y_train
         
         print(f"\n{'='*80}")
-        print(f"TRAINING RANDOM FOREST CLASSIFIER")
+        print(f"TRAINING XGBOOST CLASSIFIER")
         print(f"{'='*80}")
         
-        # Merge instance-level and call-level RF parameters
+        # Merge instance-level and call-level XGB parameters
         # Call-level params override instance-level params
-        merged_rf_params = self.rf_params.copy() if self.rf_params else {}
-        if rf_params:
-            merged_rf_params.update(rf_params)
+        merged_xgb_params = self.xgb_params.copy() if self.xgb_params else {}
+        if xgb_params:
+            merged_xgb_params.update(xgb_params)
         
-        # Default RF parameters based on paper (used if not overridden)
+        # Default XGB parameters (converting RF-based values to XGB equivalents)
         if self.asset_class == 'commodity':
             default_params = {
-                'n_estimators': 280,  # Paper Table 2 values
+                'n_estimators': 280,  # Same as paper's RF n_estimators
                 'max_depth': 3,
-                'min_samples_split': 18,
-                'min_samples_leaf': 95,
-                'max_samples': 0.125,
-                'max_features': 0.4,
-                'min_weight_fraction_leaf': 0.02,
+                'learning_rate': 0.1,  # XGB default
+                'subsample': 0.8,  # XGB equivalent of max_samples
+                'colsample_bytree': 0.4,  # XGB equivalent of max_features
+                'min_child_weight': 95,  # XGB equivalent of min_samples_leaf
+                'gamma': 0.02,  # XGB regularization
                 'random_state': self.random_seed,
                 'n_jobs': -1,
-                'class_weight': 'balanced'
+                'tree_method': 'hist',
+                'enable_categorical': False
             }
         else:    
             default_params = {
-                'n_estimators': 220,  # Paper Table 2 values
+                'n_estimators': 220,  # Same as paper's RF n_estimators
                 'max_depth': 13,
-                'min_samples_split': 76,
-                'min_samples_leaf': 95,
-                'max_samples': 0.36,
-                'max_features': 0.25,
-                'min_weight_fraction_leaf': 0.045,
+                'learning_rate': 0.1,  # XGB default
+                'subsample': 0.8,  # XGB equivalent of max_samples
+                'colsample_bytree': 0.25,  # XGB equivalent of max_features
+                'min_child_weight': 95,  # XGB equivalent of min_samples_leaf
+                'gamma': 0.045,  # XGB regularization
                 'random_state': self.random_seed,
                 'n_jobs': -1,
-                'class_weight': 'balanced'
+                'tree_method': 'hist',
+                'enable_categorical': False
             }
         
         # Update defaults with merged params
-        default_params.update(merged_rf_params)
+        default_params.update(merged_xgb_params)
         
-        print(f"RF Parameters:")
+        print(f"XGB Parameters:")
         for key, val in default_params.items():
             print(f"  {key}: {val}")
         
@@ -1839,11 +1862,73 @@ class KMRF:
         print(f"\nTraining samples: {len(X_clean)}")
         print(f"Features: {X_clean.shape[1]}")
         print(f"Date range: {X_clean.index[0]} to {X_clean.index[-1]}")
+        print(f"\nClass distribution:")
+        print(y_clean.value_counts().sort_index())
         
-        # Train Random Forest
-        print(f"\nFitting Random Forest...")
-        self.rf_model = RandomForestClassifier(**default_params)
-        self.rf_model.fit(X_clean.values, y_clean.values)
+        # XGBoost requires labels to start from 0 and be consecutive integers
+        
+        if self.classification_type == 'adapted':
+            # Adapted: {-1, 0, 1} -> {0, 1, 2}
+            # But if not all regimes are present, we need to handle it similarly to 'original'
+            unique_regimes = sorted(y_clean.unique())
+            
+            # Check if all 3 regimes are present
+            expected_regimes = [-1, 0, 1]
+            missing_regimes = [r for r in expected_regimes if r not in unique_regimes]
+            
+            if missing_regimes:
+                print(f"\n⚠️  WARNING: Not all regimes present in training data!")
+                print(f"  Expected regimes: {expected_regimes}")
+                print(f"  Present regimes:  {unique_regimes}")
+                print(f"  Missing regimes:  {missing_regimes}")
+                print(f"  Missing regime predictions will be set to 0.0 probability")
+            
+            # Always use the full mapping even if some regimes are missing
+            self._label_mapping = {-1: 0, 0: 1, 1: 2}
+            self._inverse_label_mapping = {0: -1, 1: 0, 2: 1}
+            y_clean_mapped = y_clean.map(self._label_mapping).astype(int)
+            
+            print(f"\nRemapping labels for XGBoost (adapted classification):")
+            print(f"  Original labels: {unique_regimes}")
+            print(f"  Mapped labels:   {sorted(y_clean_mapped.unique())}")
+            print(f"  Mapping: {self._label_mapping}")
+        else:
+            # Original: Labels are [0, 1, 2, 3] representing [LV_Bull, LV_Bear, HV_Bull, HV_Bear]
+            # But if not all regimes are present in training, we need to map them to consecutive integers [0, 1, 2, ...]
+            unique_regimes = sorted(y_clean.unique())
+            
+            # Check if all 4 regimes are present
+            expected_regimes = [0, 1, 2, 3]
+            missing_regimes = [r for r in expected_regimes if r not in unique_regimes]
+            
+            if missing_regimes:
+                print(f"\n⚠️  WARNING: Not all regimes present in training data!")
+                print(f"  Expected regimes: {expected_regimes}")
+                print(f"  Present regimes:  {unique_regimes}")
+                print(f"  Missing regimes:  {missing_regimes}")
+                print(f"  Missing regime predictions will be set to 0.0 probability")
+            
+            # Create mapping from original regime number to consecutive integers
+            self._label_mapping = {int(regime): idx for idx, regime in enumerate(unique_regimes)}
+            # Create inverse mapping from XGBoost's consecutive integers back to original regime numbers
+            self._inverse_label_mapping = {idx: int(regime) for regime, idx in self._label_mapping.items()}
+            
+            y_clean_mapped = y_clean.map(self._label_mapping).astype(int)
+            
+            print(f"\nRemapping labels for XGBoost (original classification):")
+            print(f"  Original regime labels: {unique_regimes}")
+            print(f"  Mapped to XGBoost:      {sorted(y_clean_mapped.unique())}")
+            print(f"  Mapping: {self._label_mapping}")
+            print(f"  Inverse mapping: {self._inverse_label_mapping}")
+        
+        # Train XGBoost
+        print(f"\nFitting XGBoost...")
+        # Delete any existing model to avoid class mismatch issues
+        # This is important when fit() is called multiple times (e.g., during feature selection)
+        if hasattr(self, 'xgb_model') and self.xgb_model is not None:
+            del self.xgb_model
+        self.xgb_model = XGBClassifier(**default_params)
+        self.xgb_model.fit(X_clean.values, y_clean_mapped.values)
         
         print(f"\n{'='*80}")
         print(f"TRAINING COMPLETE")
@@ -1887,7 +1972,7 @@ class KMRF:
         >>> predictions = kmrf.predict()  # Get probabilities for X_test
         >>> predictions = kmrf.predict(X_test)  # Explicit
         """
-        if self.rf_model is None:
+        if self.xgb_model is None:
             raise ValueError("Model not trained. Call fit() first or load a saved model.")
         
         if X is None:
@@ -1919,33 +2004,57 @@ class KMRF:
         X_clean = X_flat.fillna(method='ffill').fillna(method='bfill')
         
         # Get probabilities for each class
-        proba = self.rf_model.predict_proba(X_clean.values)
+        proba = self.xgb_model.predict_proba(X_clean.values)
         
         # Create DataFrame with meaningful column names
-        # Classes are sorted, so we need to map them correctly
-        classes = self.rf_model.classes_
+        # XGBoost only outputs probabilities for classes it was trained on
         
         if self.classification_type == 'adapted':
-            class_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
+            # For adapted classification, XGBoost outputs probabilities for the classes it learned
+            # We need to map them back to the original regime numbers using inverse_label_mapping
+            regime_names = {-1: 'P(Bearish)', 0: 'P(Other)', 1: 'P(Bullish)'}
+            
+            # XGBoost's classes_ gives us the consecutive integers [0, 1, 2, ...]
+            # Map them back to original regime numbers, then to regime names
+            columns = []
+            for xgb_class in self.xgb_model.classes_:
+                original_regime = self._inverse_label_mapping[int(xgb_class)]
+                columns.append(regime_names[original_regime])
+            
+            all_columns = [regime_names[i] for i in [-1, 0, 1]]  # All 3 regimes for final output
+            
         else:  # original
-            class_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
+            # For original classification, XGBoost outputs probabilities for the classes it learned
+            # We need to map them back to the original regime numbers using inverse_label_mapping
+            regime_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
+            
+            # XGBoost's classes_ gives us the consecutive integers [0, 1, 2, ...]
+            # Map them back to original regime numbers, then to regime names
+            columns = []
+            for xgb_class in self.xgb_model.classes_:
+                original_regime = self._inverse_label_mapping[int(xgb_class)]
+                columns.append(regime_names[original_regime])
+            
+            all_columns = [regime_names[i] for i in range(4)]  # All 4 regimes for final output
         
         result = pd.DataFrame(
             proba,
             index=X.index,
-            columns=[class_names.get(c, f'P(Class_{c})') for c in classes]
+            columns=columns
         )
 
         if self.classification_type == 'original':
-            for col in ['P(LV_Bull)', 'P(LV_Bear)', 'P(HV_Bull)', 'P(HV_Bear)']:
+            # Ensure all 4 regime columns are present, filling missing ones with 0.0
+            for col in all_columns:
                 if col not in result.columns:
                     result[col] = 0.0  # Fill missing columns with zeros
-            result = result[['P(LV_Bull)', 'P(LV_Bear)', 'P(HV_Bull)', 'P(HV_Bear)']]
-        else:
-            for col in ['P(Bullish)', 'P(Other)', 'P(Bearish)']:
+            result = result[all_columns]
+        else:  # adapted
+            # Ensure all 3 regime columns are present, filling missing ones with 0.0
+            for col in all_columns:
                 if col not in result.columns:
                     result[col] = 0.0  # Fill missing columns with zeros
-            result = result[['P(Bullish)', 'P(Other)', 'P(Bearish)']]
+            result = result[all_columns]
 
         print(f"✓ Generated probability predictions: {result.shape}")
         if test_or_val.lower() == 'test':
@@ -2110,7 +2219,7 @@ class KMRF:
         Save trained KMRF model to disk.
         
         Saves the complete model including:
-        - Random Forest classifier
+        - XGBoost classifier
         - Selected features (if feature selection was used)
         - Train/val/test splits (X_train, y_train, X_val, X_test)
         - All model data (features, labels, cross-asset features, etc.)
@@ -2138,7 +2247,7 @@ class KMRF:
         >>> # Load later
         >>> kmrf = KMRF.load_model('saved_models/my_kmrf_model.pkl')
         """
-        if self.rf_model is None:
+        if self.xgb_model is None:
             raise ValueError("No model to save. Train model first with fit().")
         
         model_path = Path(model_path)
@@ -2148,14 +2257,14 @@ class KMRF:
         
         # Package model data - save everything needed to skip retraining
         model_data = {
-            'rf_model': self.rf_model,
+            'xgb_model': self.xgb_model,
             'selected_features': self.selected_features,
             'asset_class': self.asset_class,
             'asset_name': self.asset_name,
             'end_date': self.end_date,
             'classification_type': self.classification_type,
             'random_seed': self.random_seed,
-            'model_params': self.rf_model.get_params(),
+            'model_params': self.xgb_model.get_params(),
             'validation_start': self.validation_start,
             'validation_end': self.validation_end,
             'test_start': self.test_start,
@@ -2163,7 +2272,12 @@ class KMRF:
             'feature_window_size': self.feature_window_size,
             'feature_asset_classes': self.feature_asset_classes,
             'cross_asset_specific': self.cross_asset_specific,
-            'rf_params': self.rf_params,
+            'xgb_params': self.xgb_params,
+            'use_boruta_selection': self.use_boruta_selection,
+            'use_consensus_selection': self.use_consensus_selection,
+            # Label mapping for adapted classification
+            'label_mapping': self._label_mapping,
+            'inverse_label_mapping': self._inverse_label_mapping,
             # Save all data
             'raw_data': self.raw_data,
             'ohlc_data': self.raw_ohlc,
@@ -2212,16 +2326,18 @@ class KMRF:
         5. Loads KAMA+MSR regime labels
         6. Adapts labels if classification_type='adapted'
         7. Prepares training data with feature engineering
-        8. Applies consensus feature selection
+        8. Applies feature selection (Boruta, Consensus, or None based on flags)
         9. Splits into train/val/test sets
-        10. Trains Random Forest classifier
+        10. Trains XGBoost classifier
         
         All configuration is read from instance variables set during initialization:
         - self.use_data_type: Determines data source ('master', 'ready', 'raw')
         - self.feature_asset_classes: List of asset classes for cross-asset features
         - self.classification_type: 'adapted' (3-class) or 'original' (4-regime)
         - self.feature_window_size: Number of time steps to include as features
-        - self.rf_params: Random Forest hyperparameters
+        - self.use_boruta_selection: If True, use Boruta feature selection
+        - self.use_consensus_selection: If True, use consensus feature selection (overrides Boruta)
+        - self.xgb_params: XGBoost hyperparameters
         
         Parameters
         ----------
@@ -2232,9 +2348,12 @@ class KMRF:
         
         Notes
         -----
-        Legacy Boruta feature selection is no longer used in favor of consensus selection.
-        Consensus combines RF importance, variance threshold, and mutual information
-        for faster, more robust feature selection.
+        Feature selection behavior:
+        - If use_consensus_selection=True: Uses consensus method (RF importance + variance + MI)
+        - Elif use_boruta_selection=True: Uses Boruta algorithm
+        - Else: Uses all features (no selection)
+        
+        Consensus selection is recommended for faster, more robust feature selection.
         
         Examples
         --------
@@ -2245,7 +2364,8 @@ class KMRF:
         ...     use_data_type='master',
         ...     feature_asset_classes=['us_equity', 'commodity'],
         ...     classification_type='adapted',
-        ...     feature_window_size=1
+        ...     feature_window_size=1,
+        ...     use_consensus_selection=True
         ... )
         >>> 
         >>> # Run complete pipeline
@@ -2276,7 +2396,11 @@ class KMRF:
         print(f"Classification Type: {self.classification_type}")
         print(f"Data Type: {self.use_data_type}")
         print(f"Feature Asset Classes: {self.feature_asset_classes}")
+        print(f"Cross-Asset Specifics: {self.cross_asset_specific}")
+        print(f"    ^ if empty, uses all assets in 'Feature Asset Classes'")
         print(f"Feature Window Size: {self.feature_window_size}")
+        print(f"Use Boruta Selection: {self.use_boruta_selection}")
+        print(f"Use Consensus Selection: {self.use_consensus_selection}")
         print(f"{'='*80}")
         
         # Step 1: Load data based on use_data_type
@@ -2301,9 +2425,17 @@ class KMRF:
         
         # Step 5-9: Prepare training data (includes cross-asset, macro, feature selection, split)
         print(f"\n[Step 5-9/10] Preparing Training Data...")
-        print(f"  - Loading cross-asset features: {len(self.feature_asset_classes) > 1}")
+        print(f"  - Loading cross-asset features: {len(self.feature_asset_classes) > 0}")
         print(f"  - Including macroeconomic data: True")
-        print(f"  - Feature selection method: Consensus (RF importance + variance + MI)")
+        
+        # Determine feature selection method based on flags
+        if self.use_consensus_selection:
+            feature_selection_method = "Consensus (RF importance + variance + MI)"
+        elif self.use_boruta_selection:
+            feature_selection_method = "Boruta"
+        else:
+            feature_selection_method = "None (using all features)"
+        print(f"  - Feature selection method: {feature_selection_method}")
         print(f"  - Train/val/test split: Yes")
         
         # Determine if cross-asset features should be used
@@ -2313,38 +2445,78 @@ class KMRF:
             include_macro=True,
             use_cross_asset_features=use_cross_asset,
             use_master_df=use_master_files,
-            select_features=False,  # We'll do consensus selection separately
+            select_features=False,  # We'll do feature selection separately based on flags
             split_data=True
         )
         
-        # Apply consensus feature selection on training data
-        print(f"\n[Consensus Feature Selection]")
-        self.fit()
-        selected_features, vote_df, all_methods = self.consensus_feature_selection(
-            X_train=self.X_train,
-            y_train=self.y_train,
-            min_votes=2,
-            variance_threshold=0.01,
-            cumulative_importance_threshold=0.95,
-            mi_top_pct=0.3
-        )
+        # Apply feature selection based on initialization flags
+        if self.use_consensus_selection:
+            # Consensus selection takes precedence
+            print(f"\n[Consensus Feature Selection]")
+            self.fit()  # Need to fit model first for feature importances
+            selected_features, vote_df, all_methods = self.consensus_feature_selection(
+                X_train=self.X_train,
+                y_train=self.y_train,
+                min_votes=2,
+                variance_threshold=0.01,
+                cumulative_importance_threshold=0.95,
+                mi_top_pct=0.3
+            )
+            
+            # Apply selected features to all splits
+            print(f"\nApplying selected features to all data splits...")
+            self.X_train = self.X_train[selected_features]
+            if self.X_val is not None and len(self.X_val) > 0:
+                self.X_val = self.X_val[selected_features]
+            if self.X_test is not None and len(self.X_test) > 0:
+                self.X_test = self.X_test[selected_features]
+            
+            print(f"  ✓ Training: {self.X_train.shape}")
+            if self.X_val is not None:
+                print(f"  ✓ Validation: {self.X_val.shape}")
+            if self.X_test is not None:
+                print(f"  ✓ Test: {self.X_test.shape}")
+                
+        elif self.use_boruta_selection:
+            # Use Boruta feature selection
+            print(f"\n[Boruta Feature Selection]")
+            if BorutaPy is None:
+                print("  ⚠️  WARNING: Boruta not installed. Skipping feature selection.")
+                print("  Install with: pip install boruta")
+            else:
+                selected_features = self.select_features_boruta(
+                    X=self.X_train,
+                    y=self.y_train,
+                    max_iter=100,
+                    percentile=100,
+                    pvalue=0.01,
+                    verbose=2
+                )
+                
+                # Apply selected features to all splits
+                print(f"\nApplying selected features to all data splits...")
+                self.X_train = self.X_train[selected_features]
+                if self.X_val is not None and len(self.X_val) > 0:
+                    self.X_val = self.X_val[selected_features]
+                if self.X_test is not None and len(self.X_test) > 0:
+                    self.X_test = self.X_test[selected_features]
+                
+                print(f"  ✓ Training: {self.X_train.shape}")
+                if self.X_val is not None:
+                    print(f"  ✓ Validation: {self.X_val.shape}")
+                if self.X_test is not None:
+                    print(f"  ✓ Test: {self.X_test.shape}")
+        else:
+            # No feature selection - use all features
+            print(f"\n[No Feature Selection - Using All Features]")
+            print(f"  Training: {self.X_train.shape}")
+            if self.X_val is not None:
+                print(f"  Validation: {self.X_val.shape}")
+            if self.X_test is not None:
+                print(f"  Test: {self.X_test.shape}")
         
-        # Apply selected features to all splits
-        print(f"\nApplying selected features to all data splits...")
-        self.X_train = self.X_train[selected_features]
-        if self.X_val is not None and len(self.X_val) > 0:
-            self.X_val = self.X_val[selected_features]
-        if self.X_test is not None and len(self.X_test) > 0:
-            self.X_test = self.X_test[selected_features]
-        
-        print(f"  ✓ Training: {self.X_train.shape}")
-        if self.X_val is not None:
-            print(f"  ✓ Validation: {self.X_val.shape}")
-        if self.X_test is not None:
-            print(f"  ✓ Test: {self.X_test.shape}")
-        
-        # Step 10: Train Random Forest
-        print(f"\n[Step 10/10] Training Random Forest Classifier...")
+        # Step 10: Train XGBoost Classifier
+        print(f"\n[Step 10/10] Training XGBoost Classifier...")
         self.fit()
         
         print(f"\n{'='*80}")
@@ -2361,7 +2533,7 @@ class KMRF:
         Load a saved KMRF model.
         
         This loads a complete trained model, including:
-        - Trained Random Forest classifier
+        - Trained XGBoost classifier
         - Selected features (if feature selection was used)
         - Train/val/test data splits
         - All model data (features, labels, cross-asset features, etc.)
@@ -2421,12 +2593,18 @@ class KMRF:
             feature_window_size=model_data.get('feature_window_size', 1),
             feature_asset_classes=model_data.get('feature_asset_classes'),
             cross_asset_specific=model_data.get('cross_asset_specific'),
-            rf_params=model_data.get('rf_params')
+            xgb_params=model_data.get('xgb_params'),
+            use_boruta_selection=model_data.get('use_boruta_selection', False),
+            use_consensus_selection=model_data.get('use_consensus_selection', False)
         )
         
         # Restore model components
-        kmrf.rf_model = model_data['rf_model']
+        kmrf.xgb_model = model_data['xgb_model']
         kmrf.selected_features = model_data.get('selected_features')
+        
+        # Restore label mappings for adapted classification
+        kmrf._label_mapping = model_data.get('label_mapping')
+        kmrf._inverse_label_mapping = model_data.get('inverse_label_mapping')
         
         # Restore all data
         kmrf.raw_data = model_data.get('raw_data')
