@@ -2,5 +2,7 @@ data/ready/us_equity.csv filter=lfs diff=lfs merge=lfs -text
 data/ready/commodity.csv filter=lfs diff=lfs merge=lfs -text
 data/ready/int_equity.csv filter=lfs diff=lfs merge=lfs -text
 data/ready/us_treasury.csv filter=lfs diff=lfs merge=lfs -text
+data/ready/universe_etfs.csv filter=lfs diff=lfs merge=lfs -text
 data/ready/macro_data_all.csv filter=lfs diff=lfs merge=lfs -text
 data/master_df.csv filter=lfs diff=lfs merge=lfs -text
+data/master_label_df.csv filter=lfs diff=lfs merge=lfs -text

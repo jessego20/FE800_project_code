@@ -32,6 +32,9 @@ except ImportError:
 
 warnings.filterwarnings('ignore')
 
+# Get the base directory (where this script is located)
+BASE_DIR = Path(__file__).parent.resolve()
+
 
 class KMRF:
     """
@@ -65,12 +68,16 @@ class KMRF:
         data_path: Optional[Union[str, Path]] = None,
         kama_msr_model_dir: Optional[Union[str, Path]] = None,
         end_date: str = '20190101',
-        use_ready_data: bool = True,
+        use_data_type: str = 'master',
         validation_start: str = '2019-02-01',
         validation_end: str = '2021-12-30',
         test_start: str = '2022-02-01',
         random_seed: int = 1010,
-        classification_type: str = 'adapted'
+        classification_type: str = 'adapted',
+        feature_window_size: int = 1,
+        feature_asset_classes: Optional[List[str]] = None,
+        cross_asset_specific: Optional[List[str]] = None,
+        rf_params: Optional[Dict] = None
     ):
         """
         Initialize the KMRF model for a specific asset.
@@ -87,8 +94,11 @@ class KMRF:
             Path to the KAMA+MSR model directory
         end_date : str, default='20190101'
             End date for KAMA+MSR model selection
-        use_ready_data : bool, default=True
-            Whether to use pre-computed features from 'ready' folder
+        use_data_type : str, default='ready'
+            Type of data to use for loading features:
+            - 'master': Load from master_df.csv (consolidated file with all assets)
+            - 'ready': Load from pre-computed features in 'ready' folder
+            - 'raw': Compute features from raw OHLC data (not yet implemented)
         validation_start : str, default='2019-04-01'
             Start date for validation period
         validation_end : str, default='2019-09-30'
@@ -101,13 +111,37 @@ class KMRF:
             Type of regime classification to use:
             - 'adapted': 3-class KMRF labels (Bullish=1, Bearish=-1, Other=0)
             - 'original': 4-regime KAMA+MSR labels (0=LV Bullish, 1=LV Bearish, 2=HV Bullish, 3=HV Bearish)
+        feature_window_size : int, default=1
+            Number of time steps (days) to include as features for each prediction.
+            If 1: Use only features from day t-1 to predict regime at day t (standard approach)
+            If >1: Stack features from the last N days (t-N+1 to t-1) to predict regime at day t
+            Example: feature_window_size=5 creates 5x more features (days t-5 through t-1)
+        feature_asset_classes : List[str], optional
+            List of asset class names to use as input features.
+            If None, uses only the target asset's own features.
+            Example: ['us_equity', 'int_equity', 'commodity']
+        rf_params : dict, optional
+            Random Forest hyperparameters to override defaults.
+            Example: {'n_estimators': 200, 'max_depth': 10}
         """
         self.asset_name = asset_name
         self.asset_class = asset_class
         self.classification_type = classification_type
         self.end_date = end_date
         self.random_seed = random_seed
-        self.use_ready_data = use_ready_data
+        self.use_data_type = use_data_type
+        
+        # Validate use_data_type
+        if use_data_type not in ['master', 'ready', 'raw']:
+            raise ValueError(
+                f"use_data_type must be 'master', 'ready', or 'raw', got '{use_data_type}'"
+            )
+        
+        # Feature window parameters
+        self.feature_window_size = feature_window_size
+        self.feature_asset_classes = feature_asset_classes if feature_asset_classes is not None else []
+        self.cross_asset_specific = cross_asset_specific if cross_asset_specific is not None else []
+        self.rf_params = rf_params if rf_params is not None else {}
 
         # Data split dates
         self.validation_start = pd.to_datetime(validation_start)
@@ -125,22 +159,25 @@ class KMRF:
         
         # Set default paths
         if data_path is None:
-            if use_ready_data:
+            if use_data_type == 'ready':
                 data_path_map = {
-                    'us_equity': 'data/ready/us_equity.csv',
-                    'commodity': 'data/ready/commodity.csv',
-                    'int_equity': 'data/ready/int_equity.csv',
-                    'us_treasury': 'data/ready/us_treasury.csv'
+                    'us_equity': BASE_DIR / 'data/ready/us_equity.csv',
+                    'commodity': BASE_DIR / 'data/ready/commodity.csv',
+                    'int_equity': BASE_DIR / 'data/ready/int_equity.csv',
+                    'us_treasury': BASE_DIR / 'data/ready/us_treasury.csv'
                 }
-            else:
+                self.data_path = data_path_map.get(asset_class, BASE_DIR / 'data')
+            elif use_data_type == 'master':
+                # For master type, data_path points to master_df.csv
+                self.data_path = BASE_DIR / 'data/master_df.csv'
+            elif use_data_type == 'raw':
                 # TODO: implement using raw data instead of 'ready' data
-                raise NotImplementedError("Only implemented to use pre-computed 'ready' data")
-            self.data_path = Path(data_path_map.get(asset_class, ''))
+                raise NotImplementedError("Raw data loading not yet implemented. Use 'ready' or 'master'.")
         else:
             self.data_path = Path(data_path)
         
         if kama_msr_model_dir is None:
-            self.kama_msr_model_dir = Path(f'saved_models/KAMA_MSR/{asset_class}/{end_date}/')
+            self.kama_msr_model_dir = BASE_DIR / f'saved_models/KAMA_MSR/{asset_class}/{end_date}/'
         else:
             self.kama_msr_model_dir = Path(kama_msr_model_dir)
         
@@ -153,6 +190,9 @@ class KMRF:
         self.macro_data: Optional[pd.DataFrame] = None
         self.kama_msr_model: Optional[object] = None
         self.selected_features: Optional[List[str]] = None
+        
+        # Cross-asset data containers
+        self.cross_asset_features: Optional[pd.DataFrame] = None
         
         # Data splits
         self.X_train: Optional[pd.DataFrame] = None
@@ -173,16 +213,49 @@ class KMRF:
         print(f"  Asset class: {self.asset_class}")
         print(f"  Classification type: {self.classification_type}")
         print(f"  End date: {self.end_date}")
-        print(f"  Using pre-computed features: {self.use_ready_data}")
+        print(f"  Data type: {self.use_data_type}")
         print(f"  Data path: {self.data_path}")
         print(f"  KAMA+MSR model directory: {self.kama_msr_model_dir}")
         print(f"  Validation period: {validation_start} to {validation_end}")
         print(f"  Test start: {test_start}")
         print(f"  Random seed: {self.random_seed}")
+        print(f"  Feature window size: {self.feature_window_size} days")
+        print(f"  Feature asset classes: {self.feature_asset_classes}")
+        if self.rf_params:
+            print(f"  Custom RF parameters: {self.rf_params}")
 
-    def set_raw_ohlc(self, data: Optional[pd.DataFrame] = None):
+    def set_raw_ohlc(self, data: Optional[pd.DataFrame] = None, use_master_df: bool = False):
         if data is not None:
             self.raw_ohlc = data
+        elif use_master_df:
+            # Load OHLC from master_df.csv
+            master_df_path = BASE_DIR / 'data/master_df.csv'
+            if master_df_path.exists():
+                # Load only OHLC columns for this asset
+                # We'll load the full data and extract OHLC
+                full_data = pd.read_csv(
+                    master_df_path,
+                    index_col=0,
+                    header=[0, 1, 2],
+                    parse_dates=True
+                )
+                full_data.index = pd.to_datetime(full_data.index)
+                
+                # Extract this asset's OHLC data
+                # Look for open, high, low, close columns
+                try:
+                    ohlc_data = full_data.loc[:, (slice(None), self.asset_name, ['open', 'high', 'low', 'close'])]
+                    # Flatten to 2-level (asset_name, ohlc_field)
+                    ohlc_data.columns = ohlc_data.columns.droplevel(0)
+                    # Keep only the OHLC level
+                    ohlc_data.columns = [(self.asset_name, col) for col in ohlc_data.columns.get_level_values(1)]
+                    self.raw_ohlc = ohlc_data.dropna(how='all')
+                except:
+                    # If extraction fails, set to None
+                    print(f"  Warning: Could not extract OHLC data from master_df for {self.asset_name}")
+                    self.raw_ohlc = None
+            else:
+                self.raw_ohlc = None
         else:
             us_equity_symbol_names = {
                 # BOND ETFS
@@ -287,16 +360,34 @@ class KMRF:
             }
             etf_symbol_name_dict = {**us_equity_symbol_names, **int_equity_symbol_names}
 
-            fmp_comm = pd.read_csv('data/inputs/fmp_commodity_list.csv')
+            fmp_comm = pd.read_csv(BASE_DIR / 'data/inputs/fmp_commodity_list.csv')
             comm_symbol_name_dict = fmp_comm.set_index('symbol')['name'].to_dict()
             comm_symbol_name_dict.update({'Nickel': 'Nickel'})
 
-            if self.asset_class != 'commodity':
-                raw_price_data = pd.read_csv('data/processed/us_equity_all_data.csv', index_col=0, header=[0, 1], parse_dates=True)
+            universe_symbol_name_dict = {
+                'IVV': 'IVV - iShares Core S&P 500 ETF',
+                'IJH': 'IJH - iShares Core S&P Mid-Cap ETF',
+                'IWM': 'IWM - iShares Russell 2000 ETF',
+                'EFA': 'EFA - iShares MSCI EAFE ETF',
+                'EEM': 'EEM - iShares MSCI Emerging Markets ETF',
+                'AGG': 'AGG - iShares Core U.S. Aggregate Bond ETF',
+                'SPTL': 'SPTL - SPDR Portfolio Long Term Treasury ETF',
+                'HYG': 'HYG - iShares iBoxx $ High Yield Corporate Bond ETF',
+                'SPBO': 'SPBO - SPDR Portfolio Corporate Bond ETF',
+                'IYR': 'IYR - iShares U.S. Real Estate ETF',
+                'DBC': 'DBC - Invesco DB Commodity Index Tracking Fund',
+                'GLD': 'GLD - SPDR Gold Shares',
+            }
+            if self.asset_class == 'universe':
+                raw_price_data = pd.read_csv(BASE_DIR / 'data/processed/universe_etfs.csv', index_col=0, header=[0, 1], parse_dates=True)
+                raw_price_data.index = pd.to_datetime(raw_price_data.index)
+                raw_price_data.rename(columns=universe_symbol_name_dict, level=0, inplace=True)
+            elif self.asset_class != 'commodity':
+                raw_price_data = pd.read_csv(BASE_DIR / 'data/processed/all_etf_data.csv', index_col=0, header=[0, 1], parse_dates=True)
                 raw_price_data.index = pd.to_datetime(raw_price_data.index)
                 raw_price_data.rename(columns=etf_symbol_name_dict, level=0, inplace=True)
             else:
-                raw_price_data = pd.read_csv('data/processed/commodity_data.csv', index_col=0, header=[0, 1], parse_dates=True)
+                raw_price_data = pd.read_csv(BASE_DIR / 'data/processed/commodity_data.csv', index_col=0, header=[0, 1], parse_dates=True)
                 raw_price_data.index = pd.to_datetime(raw_price_data.index)
                 raw_price_data.rename(columns=comm_symbol_name_dict, level=0, inplace=True)
 
@@ -305,42 +396,105 @@ class KMRF:
                                             (self.asset_name, 'low'), 
                                             (self.asset_name, 'close')]].dropna(how='all')
 
-    def load_data(self, rename_map: Optional[Dict] = None) -> pd.DataFrame:
-        """Load data for the specific asset."""
-        if not self.data_path.exists():
-            raise FileNotFoundError(f"Data file not found: {self.data_path}")
+    def load_data(self, rename_map: Optional[Dict] = None, use_master_df: bool = True) -> pd.DataFrame:
+        """
+        Load data for the specific asset.
         
-        print(f"\nLoading data from: {self.data_path}")
-
-        self.set_raw_ohlc()
+        Parameters
+        ----------
+        rename_map : dict, optional
+            Dictionary to rename columns
+        use_master_df : bool, default=True
+            If True, loads from master_df.csv (3-level columns: asset_class, asset_name, feature)
+            If False, loads from legacy ready data files (2-level columns: asset_name, feature)
         
-        # Load full dataset
-        full_data = pd.read_csv(
-            self.data_path,
-            index_col=0,
-            header=[0, 1],
-            parse_dates=True
-        )
-        full_data.index = pd.to_datetime(full_data.index)
-        
-        if rename_map:
-            full_data.rename(columns=rename_map, level=0, inplace=True)
-        
-        # Extract only this asset's data
-        available_assets = full_data.columns.get_level_values(0).unique().tolist()
-        
-        if self.asset_name not in available_assets:
-            raise ValueError(
-                f"Asset '{self.asset_name}' not found in data. "
-                f"Available assets: {', '.join(available_assets[:10])}..."
+        Returns
+        -------
+        pd.DataFrame
+            Feature data for the specific asset
+        """
+        if use_master_df:
+            # Load from master_df.csv
+            master_df_path = BASE_DIR / 'data/master_df.csv'
+            if not master_df_path.exists():
+                raise FileNotFoundError(f"Master data file not found: {master_df_path}")
+            
+            print(f"\nLoading data from: {master_df_path}")
+            
+            self.set_raw_ohlc(use_master_df=False)
+            
+            # Load full master dataset with 3-level columns
+            full_data = pd.read_csv(
+                master_df_path,
+                index_col=0,
+                header=[0, 1, 2],
+                parse_dates=True
             )
-        
-        self.raw_data = full_data.xs(self.asset_name, level=0, axis=1).dropna(how='all')
-        
-        print(f"Loaded data for: {self.asset_name}")
-        print(f"  Rows: {self.raw_data.shape[0]}")
-        print(f"  Columns: {self.raw_data.shape[1]}")
-        print(f"  Date range: {self.raw_data.index[0]} to {self.raw_data.index[-1]}")
+            full_data.index = pd.to_datetime(full_data.index)
+            
+            if rename_map:
+                full_data.rename(columns=rename_map, level=1, inplace=True)
+            
+            # Extract only this asset's data
+            # Check if asset exists
+            available_assets = full_data.columns.get_level_values(1).unique().tolist()
+            
+            if self.asset_name not in available_assets:
+                raise ValueError(
+                    f"Asset '{self.asset_name}' not found in data. "
+                    f"Available assets: {', '.join(available_assets[:10])}..."
+                )
+            
+            # Extract asset data: select by asset_name (level 1), keep all features (level 2)
+            # Result will be single-level columns (just features)
+            self.raw_data = full_data.xs(self.asset_name, level=1, axis=1).dropna(how='all')
+            
+            # The result has multi-index columns (asset_class, feature), flatten to just feature names
+            if isinstance(self.raw_data.columns, pd.MultiIndex):
+                # Keep only the feature level (level 1 after xs)
+                self.raw_data.columns = self.raw_data.columns.get_level_values(-1)
+            
+            print(f"Loaded data for: {self.asset_name}")
+            print(f"  Rows: {self.raw_data.shape[0]}")
+            print(f"  Columns: {self.raw_data.shape[1]}")
+            print(f"  Date range: {self.raw_data.index[0]} to {self.raw_data.index[-1]}")
+            
+        else:
+            # Legacy loading from ready data files
+            if not self.data_path.exists():
+                raise FileNotFoundError(f"Data file not found: {self.data_path}")
+            
+            print(f"\nLoading data from: {self.data_path}")
+
+            self.set_raw_ohlc()
+            
+            # Load full dataset
+            full_data = pd.read_csv(
+                self.data_path,
+                index_col=0,
+                header=[0, 1],
+                parse_dates=True
+            )
+            full_data.index = pd.to_datetime(full_data.index)
+            
+            if rename_map:
+                full_data.rename(columns=rename_map, level=0, inplace=True)
+            
+            # Extract only this asset's data
+            available_assets = full_data.columns.get_level_values(0).unique().tolist()
+            
+            if self.asset_name not in available_assets:
+                raise ValueError(
+                    f"Asset '{self.asset_name}' not found in data. "
+                    f"Available assets: {', '.join(available_assets[:10])}..."
+                )
+            
+            self.raw_data = full_data.xs(self.asset_name, level=0, axis=1).dropna(how='all')
+            
+            print(f"Loaded data for: {self.asset_name}")
+            print(f"  Rows: {self.raw_data.shape[0]}")
+            print(f"  Columns: {self.raw_data.shape[1]}")
+            print(f"  Date range: {self.raw_data.index[0]} to {self.raw_data.index[-1]}")
         
         return self.raw_data
     
@@ -349,54 +503,115 @@ class KMRF:
         if self.raw_data is None:
             raise ValueError("No data loaded. Call load_data() first.")
         
-        if self.use_ready_data:
+        if self.use_data_type in ['ready', 'master']:
             print(f"\nExtracting pre-computed features for {self.asset_name}...")
             self.features = self.raw_data.copy()
             print(f"  Features shape: {self.features.shape}")
-        else:
+        elif self.use_data_type == 'raw':
             # TODO: implement using raw data instead of 'ready' data
-            raise NotImplementedError("Feature computation from raw data not yet implemented.")
+            raise NotImplementedError("Feature computation from raw data not yet implemented. Use 'ready' or 'master'.")
+        else:
+            raise ValueError(f"Invalid use_data_type: {self.use_data_type}")
         
         self.features = self.features.dropna(how='all')
         return self.features
     
-    def load_kama_msr_labels(self) -> pd.Series:
-        """Load KAMA+MSR regime labels from saved model for this asset."""
-        if not self.kama_msr_model_dir.exists():
-            raise FileNotFoundError(f"KAMA+MSR model directory not found: {self.kama_msr_model_dir}")
+    def load_kama_msr_labels(self, use_master_label_df: bool = True) -> pd.Series:
+        """
+        Load KAMA+MSR regime labels from saved model or master_label_df for this asset.
         
-        print(f"\n{'='*80}")
-        print(f"LOADING KAMA+MSR LABELS FOR {self.asset_name}")
-        print(f"{'='*80}")
-        print(f"Model directory: {self.kama_msr_model_dir}")
+        Parameters
+        ----------
+        use_master_label_df : bool, default=True
+            If True, loads labels from master_label_df.csv
+            If False, loads labels from saved KAMA+MSR model files (legacy)
         
-        # Try to find model file
-        model_pattern = f"{self.asset_name}_KAMA-MSR_4-regimes.pkl"
-        model_files = list(self.kama_msr_model_dir.glob(model_pattern))
-        
-        if not model_files:
-            asset_safe = self.asset_name.replace(' ', '_')
-            model_pattern = f"{asset_safe}_KAMA-MSR_4-regimes.pkl"
+        Returns
+        -------
+        pd.Series
+            Regime labels for the asset
+        """
+        if use_master_label_df:
+            # Load from master_label_df.csv
+            master_label_path = BASE_DIR / 'data/master_label_df.csv'
+            if not master_label_path.exists():
+                raise FileNotFoundError(f"Master label file not found: {master_label_path}")
+            
+            print(f"\n{'='*80}")
+            print(f"LOADING KAMA+MSR LABELS FOR {self.asset_name}")
+            print(f"{'='*80}")
+            print(f"Loading from: {master_label_path}")
+            
+            # Load full master label dataset with 2-level columns (asset_class, asset_name)
+            # The third row is just "date" repeated, so we use header=[0,1]
+            full_labels = pd.read_csv(
+                master_label_path,
+                index_col=0,
+                header=[0, 1],
+                parse_dates=True
+            )
+            full_labels.index = pd.to_datetime(full_labels.index)
+            
+            # Check if asset exists
+            available_assets = full_labels.columns.get_level_values(1).unique().tolist()
+            
+            if self.asset_name not in available_assets:
+                raise ValueError(
+                    f"Asset '{self.asset_name}' not found in label data. "
+                    f"Available assets: {', '.join(available_assets[:10])}..."
+                )
+            
+            # Extract labels for this asset
+            # Select by asset_name (level 1), should give us a Series
+            asset_labels = full_labels.xs(self.asset_name, level=1, axis=1)
+            
+            # If multi-index result, take the first (should only be one column per asset)
+            if isinstance(asset_labels, pd.DataFrame):
+                asset_labels = asset_labels.iloc[:, 0]
+            
+            self.labels = asset_labels.dropna()
+            
+            print(f"✓ Loaded labels for: {self.asset_name}")
+            print(f"  Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
+            print(f"  Total periods: {len(self.labels)}")
+            
+        else:
+            # Legacy loading from saved KAMA+MSR model files
+            if not self.kama_msr_model_dir.exists():
+                raise FileNotFoundError(f"KAMA+MSR model directory not found: {self.kama_msr_model_dir}")
+            
+            print(f"\n{'='*80}")
+            print(f"LOADING KAMA+MSR LABELS FOR {self.asset_name}")
+            print(f"{'='*80}")
+            print(f"Model directory: {self.kama_msr_model_dir}")
+            
+            # Try to find model file
+            model_pattern = f"{self.asset_name}_KAMA-MSR_4-regimes.pkl"
             model_files = list(self.kama_msr_model_dir.glob(model_pattern))
-        
-        if not model_files:
-            raise FileNotFoundError(f"Model not found for: {self.asset_name}")
-        
-        model_file = model_files[0]
-        
-        print(f"Loading from: {model_file.name}")
-        
-        with open(model_file, 'rb') as f:
-            self.kama_msr_model = pickle.load(f)
-        
-        if not hasattr(self.kama_msr_model, 'regime_labels'):
-            raise ValueError(f"No regime_labels attribute in model for: {self.asset_name}")
-        
-        self.labels = self.kama_msr_model.regime_labels.copy()
-        
-        print(f"✓ Loaded labels for: {self.asset_name}")
-        print(f"  Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
-        print(f"  Total periods: {len(self.labels)}")
+            
+            if not model_files:
+                asset_safe = self.asset_name.replace(' ', '_')
+                model_pattern = f"{asset_safe}_KAMA-MSR_4-regimes.pkl"
+                model_files = list(self.kama_msr_model_dir.glob(model_pattern))
+            
+            if not model_files:
+                raise FileNotFoundError(f"Model not found for: {self.asset_name}")
+            
+            model_file = model_files[0]
+            
+            print(f"Loading from: {model_file.name}")
+            
+            with open(model_file, 'rb') as f:
+                self.kama_msr_model = pickle.load(f)
+            
+            if not hasattr(self.kama_msr_model, 'regime_labels'):
+                raise ValueError(f"No regime_labels attribute in model for: {self.asset_name}")
+            
+            self.labels = self.kama_msr_model.regime_labels.copy()
+            
+            print(f"✓ Loaded labels for: {self.asset_name}")
+            print(f"  Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
+            print(f"  Total periods: {len(self.labels)}")
         
         # Print distribution
         print(f"\n  Original 4-regime distribution:")
@@ -418,7 +633,7 @@ class KMRF:
         This method forward-fills the data to match the daily frequency of asset data.
         """
         if macro_data_path is None:
-            macro_data_path = Path('data/ready/macro_data_daily.csv')
+            macro_data_path = BASE_DIR / 'data/ready/macro_data_daily.csv'
         else:
             macro_data_path = Path(macro_data_path)
         
@@ -442,6 +657,144 @@ class KMRF:
         print(f"Macro indicators: {len(macro_df.columns.get_level_values(0).unique())}")
         
         return self.macro_data
+    
+    def load_cross_asset_features(self, use_master_df: bool = True) -> pd.DataFrame:
+        """
+        Load features from multiple asset classes for cross-asset predictions.
+        
+        This method loads feature data from all asset classes specified in 
+        self.feature_asset_classes and combines them into a single DataFrame.
+        
+        Parameters
+        ----------
+        use_master_df : bool, default=True
+            If True, loads from master_df.csv (3-level columns)
+            If False, loads from legacy ready data files (2-level columns)
+        
+        Returns
+        -------
+        pd.DataFrame
+            Combined features from all specified asset classes with multi-level columns
+            where level 0 is asset name and level 1 is feature name.
+        """
+        if not self.feature_asset_classes:
+            print("No feature asset classes specified. Using only target asset features.")
+            return self.features
+        
+        print(f"\n{'='*80}")
+        print(f"LOADING CROSS-ASSET FEATURES")
+        print(f"{'='*80}")
+        print(f"Target asset: {self.asset_name} ({self.asset_class})")
+        print(f"Feature asset classes: {self.feature_asset_classes}")
+        
+        if use_master_df:
+            # Load from master_df.csv
+            master_df_path = BASE_DIR / 'data/master_df.csv'
+            if not master_df_path.exists():
+                raise FileNotFoundError(f"Master data file not found: {master_df_path}")
+            
+            print(f"\n  Loading all features from: {master_df_path}")
+            
+            # Load full master dataset with 3-level columns
+            full_data = pd.read_csv(
+                master_df_path,
+                index_col=0,
+                header=[0, 1, 2],
+                parse_dates=True
+            )
+            full_data.index = pd.to_datetime(full_data.index)
+            
+            print(f"    Loaded full shape: {full_data.shape}")
+            
+            # Filter to only the specified asset classes
+            # Level 0 is asset_class
+            asset_class_mask = full_data.columns.get_level_values(0).isin(self.feature_asset_classes)
+            filtered_data = full_data.loc[:, asset_class_mask]
+            
+            print(f"    Filtered to {self.feature_asset_classes}: {filtered_data.shape}")
+            print(f"    Date range: {filtered_data.index[0]} to {filtered_data.index[-1]}")
+            
+            # For compatibility, we need to convert 3-level (asset_class, asset_name, feature)
+            # to 2-level (asset_name, feature) to match existing code expectations
+            # Drop the asset_class level
+            filtered_data.columns = filtered_data.columns.droplevel(0)
+            
+            combined_features = filtered_data.dropna(how='all')
+            
+            # Align with target asset's index if features exist
+            if self.features is not None:
+                combined_features = combined_features.reindex(self.features.index).ffill()
+            
+            self.cross_asset_features = combined_features
+            
+            print(f"\n  Combined cross-asset features:")
+            print(f"    Total shape: {combined_features.shape}")
+            print(f"    Total assets: {len(combined_features.columns.get_level_values(0).unique())}")
+            print(f"    Features per asset: ~{combined_features.shape[1] // len(combined_features.columns.get_level_values(0).unique())}")
+            print(f"    Date range: {combined_features.index[0]} to {combined_features.index[-1]}")
+            print(f"{'='*80}")
+            
+        else:
+            # Legacy loading from ready data files
+            all_features = []
+            
+            for asset_cls in self.feature_asset_classes:
+                # Determine data path for this asset class
+                if self.use_data_type == 'ready':
+                    data_path_map = {
+                        'us_equity': BASE_DIR / 'data/ready/us_equity.csv',
+                        'commodity': BASE_DIR / 'data/ready/commodity.csv',
+                        'int_equity': BASE_DIR / 'data/ready/int_equity.csv',
+                        'us_treasury': BASE_DIR / 'data/ready/us_treasury.csv'
+                    }
+                    asset_data_path = data_path_map.get(asset_cls, BASE_DIR / 'data')
+                elif self.use_data_type == 'raw':
+                    raise NotImplementedError("Raw data loading not yet implemented. Use 'ready' or 'master'.")
+                else:
+                    raise ValueError(f"Invalid use_data_type for legacy loading: {self.use_data_type}")
+                
+                if not asset_data_path.exists():
+                    print(f"  WARNING: Data file not found for {asset_cls}: {asset_data_path}")
+                    continue
+                
+                print(f"\n  Loading {asset_cls} features from: {asset_data_path}")
+                
+                # Load full dataset for this asset class
+                asset_data = pd.read_csv(
+                    asset_data_path,
+                    index_col=0,
+                    header=[0, 1],
+                    parse_dates=True
+                )
+                asset_data.index = pd.to_datetime(asset_data.index)
+                
+                print(f"    Loaded shape: {asset_data.shape}")
+                print(f"    Assets in {asset_cls}: {len(asset_data.columns.get_level_values(0).unique())}")
+                print(f"    Date range: {asset_data.index[0]} to {asset_data.index[-1]}")
+                
+                all_features.append(asset_data)
+            
+            if not all_features:
+                raise ValueError("No feature data loaded from any asset class")
+            
+            # Combine all features
+            combined_features = pd.concat(all_features, axis=1)
+            combined_features = combined_features.dropna(how='all')
+            
+            # Align with target asset's index if features exist
+            if self.features is not None:
+                combined_features = combined_features.reindex(self.features.index).ffill()
+            
+            self.cross_asset_features = combined_features
+            
+            print(f"\n  Combined cross-asset features:")
+            print(f"    Total shape: {combined_features.shape}")
+            print(f"    Total assets: {len(combined_features.columns.get_level_values(0).unique())}")
+            print(f"    Features per asset: ~{combined_features.shape[1] // len(combined_features.columns.get_level_values(0).unique())}")
+            print(f"    Date range: {combined_features.index[0]} to {combined_features.index[-1]}")
+            print(f"{'='*80}")
+        
+        return self.cross_asset_features
     
     def select_features_boruta(
         self,
@@ -554,6 +907,235 @@ class KMRF:
             self.selected_features = X_clean.columns.tolist()
         
         return self.selected_features
+    
+    def consensus_feature_selection(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        min_votes: int = 2,
+        variance_threshold: float = 0.01,
+        cumulative_importance_threshold: float = 0.95,
+        mi_top_pct: float = 0.3
+    ) -> Tuple[List[str], pd.DataFrame, Dict[str, set]]:
+        """
+        Multi-method consensus feature selection.
+        
+        Uses multiple fast feature selection methods and keeps features selected by 
+        at least `min_votes` methods. This provides robust feature selection without
+        the computational cost of Boruta.
+        
+        Methods used:
+        1. Built-in RF importance (instant) - cumulative importance threshold
+        2. Variance threshold (instant) - removes low-variance features
+        3. Mutual Information (1-2 min) - information-theoretic relevance
+        
+        Parameters
+        ----------
+        X_train : pd.DataFrame
+            Training features
+        y_train : pd.Series
+            Training labels
+        min_votes : int, default=2
+            Minimum number of methods that must select a feature to be included
+        variance_threshold : float, default=0.01
+            Variance threshold for removing low-variance features
+        cumulative_importance_threshold : float, default=0.95
+            Keep features that account for this fraction of total RF importance
+        mi_top_pct : float, default=0.3
+            Keep top X% of features by mutual information score
+            
+        Returns
+        -------
+        consensus_features : List[str]
+            Features selected by >= min_votes methods
+        vote_df : pd.DataFrame
+            DataFrame with vote counts and method selections for each feature
+        all_methods : Dict[str, set]
+            Dictionary mapping method names to their selected feature sets
+            
+        Examples
+        --------
+        >>> selected, votes_df, methods = model.consensus_feature_selection(X_train, y_train)
+        >>> print(f"Selected {len(selected)} features from {len(X_train.columns)}")
+        >>> print(votes_df[votes_df['votes'] >= 2].head())
+        """
+        from sklearn.feature_selection import VarianceThreshold, mutual_info_classif
+        
+        print(f"\n{'='*80}")
+        print("CONSENSUS FEATURE SELECTION")
+        print(f"{'='*80}")
+        print(f"Input features: {X_train.shape[1]}")
+        print(f"Training samples: {X_train.shape[0]}")
+        print(f"Minimum votes required: {min_votes}")
+        
+        # Flatten column names if they're tuples (from multi-index)
+        original_columns = X_train.columns
+        if isinstance(X_train.columns[0], tuple):
+            print(f"\nFlattening multi-index column names...")
+            X_train_flat = X_train.copy()
+            X_train_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
+                                    for col in X_train.columns]
+            # Create mapping from flattened to original
+            col_mapping = dict(zip(X_train_flat.columns, original_columns))
+        else:
+            X_train_flat = X_train
+            col_mapping = {col: col for col in X_train.columns}
+        
+        all_methods = {}
+        
+        # Method 1: Built-in RF importance (instant)
+        print(f"\nMethod 1: RF Feature Importance (Cumulative {cumulative_importance_threshold*100:.0f}%)")
+        if self.rf_model is None:
+            raise ValueError("Model must be trained first. Call fit() before consensus_feature_selection()")
+        
+        imp_df = pd.DataFrame({
+            'feature': X_train_flat.columns,
+            'importance': self.rf_model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        imp_df['cumulative'] = imp_df['importance'].cumsum() / imp_df['importance'].sum()
+        selected_imp_flat = set(imp_df[imp_df['cumulative'] <= cumulative_importance_threshold]['feature'])
+        # Map back to original column names
+        selected_imp = {col_mapping[f] for f in selected_imp_flat}
+        all_methods['builtin_importance'] = selected_imp
+        print(f"  Selected: {len(selected_imp)} features")
+        
+        # Method 2: Variance threshold (instant)
+        print(f"\nMethod 2: Variance Threshold (>{variance_threshold})")
+        var_selector = VarianceThreshold(threshold=variance_threshold)
+        var_selector.fit(X_train_flat.values)  # Use .values to avoid column name issues
+        selected_var_flat = set(X_train_flat.columns[var_selector.get_support()])
+        # Map back to original column names
+        selected_var = {col_mapping[f] for f in selected_var_flat}
+        all_methods['variance'] = selected_var
+        print(f"  Selected: {len(selected_var)} features")
+
+        # Method 3: Mutual Information (fast - 1-2 min)
+        print(f"\nMethod 3: Mutual Information (Top {mi_top_pct*100:.0f}%)")
+        mi_scores = mutual_info_classif(X_train_flat.values, y_train, random_state=self.random_seed)
+        mi_df = pd.DataFrame({'feature': X_train_flat.columns, 'mi': mi_scores})
+        mi_df = mi_df.sort_values('mi', ascending=False)
+        n_top_mi = int(len(X_train_flat.columns) * mi_top_pct)
+        selected_mi_flat = set(mi_df.head(n_top_mi)['feature'])
+        # Map back to original column names
+        selected_mi = {col_mapping[f] for f in selected_mi_flat}
+        all_methods['mutual_info'] = selected_mi
+        print(f"  Selected: {len(selected_mi)} features")
+        
+        # Count votes for each feature (using original column names)
+        print(f"\nCounting votes...")
+        feature_votes = {}
+        for feature in original_columns:
+            votes = sum(1 for method_features in all_methods.values() if feature in method_features)
+            feature_votes[feature] = votes
+        
+        # Keep features with >= min_votes
+        consensus_features = [f for f, votes in feature_votes.items() if votes >= min_votes]
+        
+        # Create summary DataFrame (convert tuples to strings for display)
+        feature_names_display = [str(f) if isinstance(f, tuple) else f for f in feature_votes.keys()]
+        vote_df = pd.DataFrame({
+            'feature': feature_names_display,
+            'feature_original': list(feature_votes.keys()),  # Keep original for indexing
+            'votes': list(feature_votes.values()),
+            'builtin': [f in all_methods['builtin_importance'] for f in feature_votes.keys()],
+            'variance': [f in all_methods['variance'] for f in feature_votes.keys()],
+            'mutual_info': [f in all_methods['mutual_info'] for f in feature_votes.keys()],
+        }).sort_values('votes', ascending=False)
+        
+        # Store selected features
+        self.selected_features = consensus_features
+        
+        # Print results
+        print(f"\n{'='*80}")
+        print("CONSENSUS RESULTS")
+        print(f"{'='*80}")
+        print(f"Selected features: {len(consensus_features)} (min_votes >= {min_votes})")
+        print(f"Reduction: {100 * (1 - len(consensus_features)/len(original_columns)):.1f}%")
+        
+        print(f"\nVote distribution:")
+        vote_counts = vote_df['votes'].value_counts().sort_index(ascending=False)
+        for votes, count in vote_counts.items():
+            pct = 100 * count / len(original_columns)
+            print(f"  {votes} votes: {count:4d} features ({pct:5.1f}%)")
+        
+        # Show top features with maximum votes
+        max_votes = vote_df['votes'].max()
+        if max_votes >= min_votes:
+            top_voted = vote_df[vote_df['votes'] == max_votes]
+            print(f"\nTop features ({max_votes} votes): {len(top_voted)} features")
+            if len(top_voted) <= 20:
+                for idx, row in top_voted.iterrows():
+                    # Use the display name (string version)
+                    print(f"  ✓ {row['feature']}")
+            else:
+                print(f"  (showing first 20)")
+                for idx, row in top_voted.head(20).iterrows():
+                    print(f"  ✓ {row['feature']}")
+        
+        return consensus_features, vote_df, all_methods
+    
+    def expand_feature_window(
+        self,
+        X: pd.DataFrame,
+        window_size: Optional[int] = None
+    ) -> pd.DataFrame:
+        """
+        Expand features to include multiple time steps for each prediction.
+        
+        Instead of using features from only day t-1 to predict regime at day t,
+        this method stacks features from days t-window_size through t-1.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame
+            Input features with datetime index
+        window_size : int, optional
+            Number of time steps to include. If None, uses self.feature_window_size
+        
+        Returns
+        -------
+        pd.DataFrame
+            Expanded features with columns named: original_feature_lag1, original_feature_lag2, etc.
+            Shape will be (n_samples - window_size + 1, n_features * window_size)
+        
+        Examples
+        --------
+        If window_size=3 and input has features ['close', 'volume']:
+        Output will have: ['close_lag1', 'volume_lag1', 'close_lag2', 'volume_lag2', 'close_lag3', 'volume_lag3']
+        
+        Row at date t will contain:
+        - close_lag1: close from t-1
+        - close_lag2: close from t-2
+        - close_lag3: close from t-3
+        """
+        if window_size is None:
+            window_size = self.feature_window_size
+        
+        # If window_size is 1, return original features (no expansion needed)
+        if window_size == 1:
+            return X
+        
+        print(f"\n  Expanding features to {window_size}-day window:")
+        print(f"    Original features: {X.shape[1]}")
+        
+        # Create lagged features for each time step in the window
+        expanded_dfs = []
+        for lag in range(1, window_size + 1):
+            # Shift features by 'lag' days and rename columns
+            lagged = X.shift(lag)
+            lagged.columns = [f"{col}_lag{lag}" for col in X.columns]
+            expanded_dfs.append(lagged)
+        
+        # Concatenate all lagged features
+        X_expanded = pd.concat(expanded_dfs, axis=1)
+        
+        # Drop rows with NaN (first window_size-1 rows will have NaN)
+        X_expanded = X_expanded.dropna()
+        
+        print(f"    Expanded features: {X_expanded.shape[1]} ({X.shape[1]} × {window_size})")
+        print(f"    Samples after window: {X_expanded.shape[0]} (dropped {len(X) - len(X_expanded)} initial rows)")
+        
+        return X_expanded
     
     def adapt_regime_labels(
         self,
@@ -704,6 +1286,8 @@ class KMRF:
     def prepare_training_data(
         self,
         include_macro: bool = True,
+        use_cross_asset_features: bool = True,
+        use_master_df: bool = True,
         select_features: bool = False,
         boruta_params: Optional[Dict] = None,
         split_data: bool = True
@@ -712,16 +1296,21 @@ class KMRF:
         Prepare features and labels for model training.
         
         This comprehensive method:
-        1. Optionally loads and combines macroeconomic data
-        2. Uses the classification type specified during initialization
-        3. Aligns feature and label indices
-        4. Optionally applies Boruta feature selection (on training data only)
-        5. Optionally splits data into train/validation/test sets
+        1. Optionally loads and combines cross-asset features
+        2. Optionally loads and combines macroeconomic data
+        3. Uses the classification type specified during initialization
+        4. Aligns feature and label indices
+        5. Optionally applies Boruta feature selection (on training data only)
+        6. Optionally splits data into train/validation/test sets
         
         Parameters
         ----------
         include_macro : bool, default=True
             Load and include macroeconomic features
+        use_cross_asset_features : bool, default=True
+            Load and use features from multiple asset classes specified in feature_asset_classes
+        use_master_df : bool, default=True
+            Whether to use master_df.csv for cross-asset features
         select_features : bool, default=False
             Apply Boruta feature selection (on training data only)
         boruta_params : dict, optional
@@ -756,52 +1345,128 @@ class KMRF:
         print(f"PREPARING TRAINING DATA FOR {self.asset_name}")
         print(f"{'='*80}")
         
-        # Step 1: Start with technical features
+        # Step 1: Start with target asset features
+        print(f"\nStep 1: Loading Target Asset Features")
         X = self.features.copy()
+        print(f"  Target asset features shape: {X.shape}")
+        print(f"  Asset: {self.asset_name}")
         
-        print(f"\nStep 1: Technical Features")
-        print(f"  Features Shape: {X.shape}")
-        
-        # Step 2: Load and combine macro data if requested
-        if include_macro:
-            print(f"\nStep 2: Loading Macroeconomic Data")
-            if self.macro_data is None:
-                self.load_macro_data()
+        # Step 2: Add cross-asset features if requested
+        if use_cross_asset_features:
+            print(f"\nStep 2: Adding Cross-Asset Features")
+            print(f"  Feature asset classes: {self.feature_asset_classes}")
             
-            if self.macro_data is not None:
-                # Align macro data to feature index
-                macro_aligned = self.macro_data.reindex(X.index).ffill()
-                X = pd.concat([X, macro_aligned], axis=1)
-                print(f"  Combined shape: {X.shape}")
+            if self.cross_asset_features is None:
+                self.load_cross_asset_features(use_master_df=use_master_df)
+            
+            # Check if target asset features are already in cross_asset_features
+            # cross_asset_features has multi-level columns: (asset_name, feature)
+            if isinstance(self.cross_asset_features.columns, pd.MultiIndex):
+                # Get unique asset names in cross_asset_features
+                cross_asset_names = self.cross_asset_features.columns.get_level_values(0).unique().tolist()
+                
+                # If target asset is in cross_asset_features, remove it to avoid duplication
+                if self.asset_name in cross_asset_names:
+                    print(f"  Removing target asset from cross-asset features to avoid duplication")
+                    # Keep only assets that are NOT the target asset
+                    other_assets = [a for a in cross_asset_names if a != self.asset_name]
+                    cross_features_to_add = self.cross_asset_features[other_assets].copy()
+                else:
+                    cross_features_to_add = self.cross_asset_features.copy()
             else:
-                print(f"  Macro data not available, skipping...")
+                cross_features_to_add = self.cross_asset_features.copy()
+
+            if self.cross_asset_specific and len(self.cross_asset_specific) > 0:
+                print(f"  Selecting specific assets for cross-asset features: {self.cross_asset_specific}")
+                col_mask = cross_features_to_add.columns.get_level_values(0).isin(self.cross_asset_specific)
+                cross_features_to_add = cross_features_to_add.loc[:, col_mask]
+
+            print(f"  Cross-asset features to add: {cross_features_to_add.shape}")
+            print(f"  Assets included ({cross_features_to_add.columns.get_level_values(0).nunique()}): {cross_features_to_add.columns.get_level_values(0).unique().tolist()}")
+            
+            # Align cross-asset features to target asset index
+            cross_features_aligned = cross_features_to_add.reindex(X.index).ffill()
+            
+            # Combine target asset features with cross-asset features
+            X = pd.concat([X, cross_features_aligned], axis=1)
+            print(f"  Combined features shape: {X.shape}")
+            print(f"  = Target ({self.features.shape[1]}) + Cross-asset ({cross_features_aligned.shape[1]})")
         else:
-            print(f"\nStep 2: Skipping macroeconomic data")
+            print(f"\nStep 2: Skipping cross-asset features")
         
-        # Step 3: Get labels based on classification type
+        # Step 3: Load and combine macro data if requested
+        if include_macro:
+            print(f"\nStep 3: Loading Macroeconomic Data")
+            
+            # Check if we're using master_df (which includes macro data)
+            if self.use_data_type == 'master':
+                # Extract macro data from master_df
+                if use_master_df:
+                    # Load master_df to extract macro data
+                    master_df_path = BASE_DIR / 'data' / 'master_df.csv'
+                    master_df = pd.read_csv(master_df_path, header=[0, 1, 2], index_col=0, parse_dates=True)
+                    
+                    # Check if macro_daily exists in master_df
+                    if 'macro_daily' in master_df.columns.get_level_values(0):
+                        macro_data = master_df['macro_daily'].copy()
+                        print(f"  Extracted macro data from master_df.csv")
+                        print(f"  Macro features shape: {macro_data.shape}")
+                        
+                        # Flatten macro data columns (it has 2 levels after selecting 'macro_daily')
+                        # Format: (asset_name, feature) -> we want just the feature names
+                        if isinstance(macro_data.columns, pd.MultiIndex):
+                            # Create new column names: asset_name + '_' + feature
+                            new_cols = ['_'.join(col).strip() for col in macro_data.columns.values]
+                            macro_data.columns = new_cols
+                        
+                        # Align macro data to feature index
+                        macro_aligned = macro_data.reindex(X.index).ffill()
+                        X = pd.concat([X, macro_aligned], axis=1)
+                        print(f"  Combined shape: {X.shape}")
+                        print(f"  = Previous ({X.shape[1] - macro_aligned.shape[1]}) + Macro ({macro_aligned.shape[1]})")
+                    else:
+                        print(f"  Warning: 'macro_daily' not found in master_df.csv")
+                else:
+                    print(f"  Macro data already in features (use_master_df=True expected)")
+            else:
+                # Load macro data from separate file for 'ready' or 'raw' modes
+                if self.macro_data is None:
+                    self.load_macro_data()
+                
+                if self.macro_data is not None:
+                    # Align macro data to feature index
+                    macro_aligned = self.macro_data.reindex(X.index).ffill()
+                    X = pd.concat([X, macro_aligned], axis=1)
+                    print(f"  Combined shape: {X.shape}")
+                else:
+                    print(f"  Macro data not available, skipping...")
+        else:
+            print(f"\nStep 3: Skipping macroeconomic data")
+        
+        # Step 4: Get labels based on classification type
         if self.classification_type == 'adapted':
             if self.adapted_labels is not None:
                 # Use pre-adapted labels
-                print(f"\nStep 3: Using Pre-Adapted Labels")
+                print(f"\nStep 4: Using Pre-Adapted Labels")
                 print(f"  (3-class labels from previous adapt_regime_labels() call)")
                 y = self.adapted_labels.copy()
             else:
                 # Adapt now
-                print(f"\nStep 3: Adapting Labels")
+                print(f"\nStep 4: Adapting Labels")
                 print("  4-regime → 3-class (Bullish=1, Bearish=-1, Other=0)")
                 y = self.adapt_regime_labels(price_data=None, labels=self.labels)
         else:  # original
-            print(f"\nStep 3: Using Original 4-Regime Labels")
+            print(f"\nStep 4: Using Original 4-Regime Labels")
             print(f"  (LV Bullish=0, LV Bearish=1, HV Bullish=2, HV Bearish=3)")
             y = self.labels.copy()
         
         print(f"  Labels Shape: ({len(y)},)")
         
-        # Step 4: Clean features
-        print(f"\nStep 4: Cleaning Features - start when labels exist")
-        X = X.loc[y.index[0]:]
+        # Step 5: Clean features (but keep all dates for validation/test)
+        print(f"\nStep 5: Cleaning Features")
         print(f"  Features date range: {X.index[0]} to {X.index[-1]}")
         print(f"  Labels date range: {y.index[0]} to {y.index[-1]}")
+        print(f"  Note: Keeping all feature dates (including validation/test periods)")
         
         # Identify columns with too many NaN values across ALL data
         nan_threshold = 0.5
@@ -816,26 +1481,35 @@ class KMRF:
         # Forward-fill and backward-fill NaN values
         X = X.ffill().bfill()
         
-        print(f"  Features ready across full date range")
+        print(f"  Features cleaned and aligned")
         
-        # Step 5: Split data if requested
+        # Step 6: Expand feature window if requested
+        if self.feature_window_size > 1:
+            print(f"\nStep 6: Expanding Feature Window")
+            X = self.expand_feature_window(X, window_size=self.feature_window_size)
+            print(f"  Expanded features shape: {X.shape}")
+            print(f"  Features date range: {X.index[0]} to {X.index[-1]}")
+        else:
+            print(f"\nStep 6: Using standard single-step features (feature_window_size=1)")
+        
+        # Step 7: Split data if requested
         if split_data:
-            print(f"\nStep 5: Splitting Data")
+            print(f"\nStep 7: Splitting Data")
             self.split_train_val_test(X, y, select_features=select_features, boruta_params=boruta_params)
             return self.X_train, self.y_train
         else:
-            print(f"\nStep 5: No data splitting")
+            print(f"\nStep 7: No data splitting")
             
-            # Step 6: Feature selection on full dataset
+            # Step 8: Feature selection on full dataset
             if select_features:
-                print(f"\nStep 6: Feature Selection (Boruta)")
+                print(f"\nStep 8: Feature Selection (Boruta)")
                 if boruta_params is None:
                     boruta_params = {'max_iter': 100}
                 
                 selected_features = self.select_features_boruta(X, y, **boruta_params)
                 X = X[selected_features]
             else:
-                print(f"\nStep 6: Skipping feature selection")
+                print(f"\nStep 8: Skipping feature selection")
             
             return X, y
     
@@ -1081,6 +1755,7 @@ class KMRF:
             - max_depth: 1-20
             - min_samples_split: 1-100
             - min_samples_leaf: 1-100
+            If provided, overrides instance-level rf_params.
             
         Returns
         -------
@@ -1094,13 +1769,12 @@ class KMRF:
         
         Examples
         --------
-        >>> kmrf.fit()  # Uses data from prepare_training_data()
-        >>> kmrf.fit(X_train, y_train, rf_params={'n_estimators': 200})
+        >>> kmrf.fit()  # Uses all training data
+        >>> kmrf.fit(rf_params={'n_estimators': 200})  # Override RF params
         """
         from sklearn.ensemble import RandomForestClassifier
         
         if X is None or y is None:
-            # raise ValueError("Features and labels required. Call prepare_training_data() first.")
             X = self.X_train
             y = self.y_train
         
@@ -1108,7 +1782,13 @@ class KMRF:
         print(f"TRAINING RANDOM FOREST CLASSIFIER")
         print(f"{'='*80}")
         
-        # Default RF parameters based on paper
+        # Merge instance-level and call-level RF parameters
+        # Call-level params override instance-level params
+        merged_rf_params = self.rf_params.copy() if self.rf_params else {}
+        if rf_params:
+            merged_rf_params.update(rf_params)
+        
+        # Default RF parameters based on paper (used if not overridden)
         if self.asset_class == 'commodity':
             default_params = {
                 'n_estimators': 280,  # Paper Table 2 values
@@ -1119,7 +1799,8 @@ class KMRF:
                 'max_features': 0.4,
                 'min_weight_fraction_leaf': 0.02,
                 'random_state': self.random_seed,
-                'n_jobs': -1
+                'n_jobs': -1,
+                'class_weight': 'balanced'
             }
         else:    
             default_params = {
@@ -1131,11 +1812,12 @@ class KMRF:
                 'max_features': 0.25,
                 'min_weight_fraction_leaf': 0.045,
                 'random_state': self.random_seed,
-                'n_jobs': -1
+                'n_jobs': -1,
+                'class_weight': 'balanced'
             }
         
-        if rf_params:
-            default_params.update(rf_params)
+        # Update defaults with merged params
+        default_params.update(merged_rf_params)
         
         print(f"RF Parameters:")
         for key, val in default_params.items():
@@ -1160,7 +1842,7 @@ class KMRF:
         
         # Train Random Forest
         print(f"\nFitting Random Forest...")
-        self.rf_model = RandomForestClassifier(**default_params, class_weight='balanced')
+        self.rf_model = RandomForestClassifier(**default_params)
         self.rf_model.fit(X_clean.values, y_clean.values)
         
         print(f"\n{'='*80}")
@@ -1173,7 +1855,7 @@ class KMRF:
     def predict(
         self,
         X: Optional[pd.DataFrame] = None,
-        test_or_val: str = 'test',
+        test_or_val: str = 'val'
     ) -> Union[pd.DataFrame, np.ndarray]:
         """
         Generate regime predictions for new data.
@@ -1185,14 +1867,13 @@ class KMRF:
         ----------
         X : pd.DataFrame, optional
             Feature matrix for prediction. If None, uses X_test from train/val/test split
-        return_proba : bool, default=True
-            Return probabilities instead of class predictions
+        test_or_val : str, default='test'
+            Whether to use test or validation data if X is None
             
         Returns
         -------
-        pd.DataFrame or np.ndarray
-            If return_proba=True: DataFrame with columns ['P(Bullish)', 'P(Other)', 'P(Bearish)']
-            If return_proba=False: Array of predicted classes (1, 0, -1 for adapted; 0,1,2,3 for original)
+        pd.DataFrame
+            DataFrame with columns for probability of each regime class
             
         Notes
         -----
@@ -1204,8 +1885,7 @@ class KMRF:
         Examples
         --------
         >>> predictions = kmrf.predict()  # Get probabilities for X_test
-        >>> predictions = kmrf.predict(X_test, return_proba=True)  # Explicit
-        >>> classes = kmrf.predict(X_test, return_proba=False)  # Get class predictions
+        >>> predictions = kmrf.predict(X_test)  # Explicit
         """
         if self.rf_model is None:
             raise ValueError("Model not trained. Call fit() first or load a saved model.")
@@ -1425,12 +2105,7 @@ class KMRF:
         # TODO: implement
         pass
 
-    def save_model(
-        self,
-        model_dir: Optional[Union[str, Path]] = None,
-        model_name: Optional[str] = None,
-        boruta_used: bool = False
-    ) -> Path:
+    def save_model(self, model_path: Union[str, Path]) -> Path:
         """
         Save trained KMRF model to disk.
         
@@ -1438,18 +2113,16 @@ class KMRF:
         - Random Forest classifier
         - Selected features (if feature selection was used)
         - Train/val/test splits (X_train, y_train, X_val, X_test)
+        - All model data (features, labels, cross-asset features, etc.)
         - Model metadata (asset class, end_date, classification_type, etc.)
         
         This allows you to load the model later without retraining or re-running feature selection.
         
         Parameters
         ----------
-        model_dir : str or Path, optional
-            Directory to save model. If None, uses 'saved_models/KMRF/{classification_type}_labels/{asset_class}/'
-        model_name : str, optional
-            Model filename. If None, auto-generates name
-        boruta_used : bool, default=False
-            Whether Boruta feature selection was used (adds to filename)
+        model_path : str or Path
+            Full path where the model should be saved (including filename and .pkl extension)
+            Parent directories will be created if they don't exist
             
         Returns
         -------
@@ -1458,31 +2131,20 @@ class KMRF:
             
         Examples
         --------
+        >>> # Save model with explicit path
         >>> kmrf.fit()
-        >>> model_path = kmrf.save_model(boruta_used=True)
-        >>> # Load later: kmrf = KMRF.load_model(model_path)
+        >>> model_path = kmrf.save_model('saved_models/my_kmrf_model.pkl')
+        >>> 
+        >>> # Load later
+        >>> kmrf = KMRF.load_model('saved_models/my_kmrf_model.pkl')
         """
         if self.rf_model is None:
             raise ValueError("No model to save. Train model first with fit().")
         
-        # Set default directory
-        if model_dir is None:
-            model_dir = Path(f'saved_models/KMRF/{self.classification_type}_labels/{self.asset_class}/')
-        else:
-            model_dir = Path(model_dir)
+        model_path = Path(model_path)
         
-        # Create directory if it doesn't exist
-        model_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Auto-generate filename
-        if model_name is None:
-            model_name = f"KMRF_{('-').join(self.asset_name.split())}_{self.end_date}"
-            if boruta_used:
-                model_name += f"_boruta.pkl"
-            else:
-                model_name += f".pkl"
-        
-        model_path = model_dir / model_name
+        # Create parent directory if it doesn't exist
+        model_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Package model data - save everything needed to skip retraining
         model_data = {
@@ -1497,23 +2159,32 @@ class KMRF:
             'validation_start': self.validation_start,
             'validation_end': self.validation_end,
             'test_start': self.test_start,
-            # Save train/val/test splits
+            # Feature engineering parameters
+            'feature_window_size': self.feature_window_size,
+            'feature_asset_classes': self.feature_asset_classes,
+            'cross_asset_specific': self.cross_asset_specific,
+            'rf_params': self.rf_params,
+            # Save all data
             'raw_data': self.raw_data,
             'ohlc_data': self.raw_ohlc,
             'features': self.features,
+            'labels': self.labels,
+            'adapted_labels': self.adapted_labels,
             'macro_data': self.macro_data,
+            'cross_asset_features': self.cross_asset_features,
+            # Save train/val/test splits
             'X_train': self.X_train,
             'y_train': self.y_train,
             'X_val': self.X_val,
             'X_test': self.X_test,
             'y_val_proba': self.y_val_proba,
             'y_test_proba': self.y_test_proba,
-            'boruta_used': boruta_used
         }
         
         # Save
         print(f"\nSaving model to: {model_path}")
         print(f"  Asset: {self.asset_name}")
+        print(f"  Asset class: {self.asset_class}")
         print(f"  Classification type: {self.classification_type}")
         print(f"  Features: {len(self.selected_features) if self.selected_features else 'all'}")
         print(f"  Training samples: {len(self.X_train) if self.X_train is not None else 0}")
@@ -1525,25 +2196,167 @@ class KMRF:
         
         return model_path
 
-    def pipeline(self, use_boruta: bool = True, include_macro: bool = True) -> None:
+    def pipeline(
+        self, 
+        optimize: bool = False
+    ) -> None:
         """
-        Run the full KMRF pipeline: load data, train model, and evaluate.
+        Run the full KMRF pipeline: load data, prepare features, train model.
+        
+        This method executes the complete training workflow using parameters
+        specified during model initialization (in __init__). It:
+        1. Loads data (raw/ready/master based on use_data_type)
+        2. Computes/loads features for target asset
+        3. Loads cross-asset features (if feature_asset_classes specified)
+        4. Loads macroeconomic data
+        5. Loads KAMA+MSR regime labels
+        6. Adapts labels if classification_type='adapted'
+        7. Prepares training data with feature engineering
+        8. Applies consensus feature selection
+        9. Splits into train/val/test sets
+        10. Trains Random Forest classifier
+        
+        All configuration is read from instance variables set during initialization:
+        - self.use_data_type: Determines data source ('master', 'ready', 'raw')
+        - self.feature_asset_classes: List of asset classes for cross-asset features
+        - self.classification_type: 'adapted' (3-class) or 'original' (4-regime)
+        - self.feature_window_size: Number of time steps to include as features
+        - self.rf_params: Random Forest hyperparameters
+        
+        Parameters
+        ----------
+        optimize : bool, default=False
+            Whether to run hyperparameter optimization
+            If False, runs the full pipeline with parameters as set by initialization
+            If True, runs Optuna optimization to find best hyperparameters (TODO: implement)
+        
+        Notes
+        -----
+        Legacy Boruta feature selection is no longer used in favor of consensus selection.
+        Consensus combines RF importance, variance threshold, and mutual information
+        for faster, more robust feature selection.
+        
+        Examples
+        --------
+        >>> # Initialize with configuration
+        >>> kmrf = KMRF(
+        ...     asset_name='SPDR S&P 500 ETF',
+        ...     asset_class='us_equity',
+        ...     use_data_type='master',
+        ...     feature_asset_classes=['us_equity', 'commodity'],
+        ...     classification_type='adapted',
+        ...     feature_window_size=1
+        ... )
+        >>> 
+        >>> # Run complete pipeline
+        >>> kmrf.pipeline()
+        >>> 
+        >>> # Model is now trained and ready for predictions
+        >>> predictions = kmrf.predict()
         """
-        raw_or_ready_data = self.load_data()
+        if optimize:
+            # TODO: Implement hyperparameter optimization workflow
+            # This should:
+            # 1. Set up Optuna study with appropriate search spaces
+            # 2. Define objective function (e.g., Sortino ratio on validation set)
+            # 3. Run optimization trials
+            # 4. Update model with best parameters
+            # 5. Retrain on full training set with optimal hyperparameters
+            raise NotImplementedError(
+                "Hyperparameter optimization (optimize=True) is not yet implemented. "
+                "This will be added in a future update to support Optuna-based "
+                "optimization of RF parameters, feature selection parameters, and "
+                "strategy parameters."
+            )
+        
+        print(f"\n{'='*80}")
+        print(f"KMRF PIPELINE FOR {self.asset_name}")
+        print(f"{'='*80}")
+        print(f"Asset Class: {self.asset_class}")
+        print(f"Classification Type: {self.classification_type}")
+        print(f"Data Type: {self.use_data_type}")
+        print(f"Feature Asset Classes: {self.feature_asset_classes}")
+        print(f"Feature Window Size: {self.feature_window_size}")
+        print(f"{'='*80}")
+        
+        # Step 1: Load data based on use_data_type
+        print(f"\n[Step 1/10] Loading Data...")
+        use_master_files = (self.use_data_type == 'master')
+        raw_or_ready_data = self.load_data(use_master_df=use_master_files)
+        
+        # Step 2: Get/compute features
+        print(f"\n[Step 2/10] Computing Features...")
         features = self.get_features()
-        kama_msr_labels = self.load_kama_msr_labels()
+        
+        # Step 3: Load KAMA+MSR labels
+        print(f"\n[Step 3/10] Loading KAMA+MSR Labels...")
+        kama_msr_labels = self.load_kama_msr_labels(use_master_label_df=use_master_files)
+        
+        # Step 4: Adapt labels if needed
         if self.classification_type == 'adapted':
+            print(f"\n[Step 4/10] Adapting Labels (4-regime → 3-class)...")
             adapted_labels = self.adapt_regime_labels(kama_msr_labels)
+        else:
+            print(f"\n[Step 4/10] Using Original 4-Regime Labels...")
+        
+        # Step 5-9: Prepare training data (includes cross-asset, macro, feature selection, split)
+        print(f"\n[Step 5-9/10] Preparing Training Data...")
+        print(f"  - Loading cross-asset features: {len(self.feature_asset_classes) > 1}")
+        print(f"  - Including macroeconomic data: True")
+        print(f"  - Feature selection method: Consensus (RF importance + variance + MI)")
+        print(f"  - Train/val/test split: Yes")
+        
+        # Determine if cross-asset features should be used
+        use_cross_asset = len(self.feature_asset_classes) > 0
+        
         X_train, y_train = self.prepare_training_data(
-            include_macro=include_macro,
-            select_features=use_boruta,
-            boruta_params={'max_iter': 100},
+            include_macro=True,
+            use_cross_asset_features=use_cross_asset,
+            use_master_df=use_master_files,
+            select_features=False,  # We'll do consensus selection separately
             split_data=True
         )
+        
+        # Apply consensus feature selection on training data
+        print(f"\n[Consensus Feature Selection]")
         self.fit()
+        selected_features, vote_df, all_methods = self.consensus_feature_selection(
+            X_train=self.X_train,
+            y_train=self.y_train,
+            min_votes=2,
+            variance_threshold=0.01,
+            cumulative_importance_threshold=0.95,
+            mi_top_pct=0.3
+        )
+        
+        # Apply selected features to all splits
+        print(f"\nApplying selected features to all data splits...")
+        self.X_train = self.X_train[selected_features]
+        if self.X_val is not None and len(self.X_val) > 0:
+            self.X_val = self.X_val[selected_features]
+        if self.X_test is not None and len(self.X_test) > 0:
+            self.X_test = self.X_test[selected_features]
+        
+        print(f"  ✓ Training: {self.X_train.shape}")
+        if self.X_val is not None:
+            print(f"  ✓ Validation: {self.X_val.shape}")
+        if self.X_test is not None:
+            print(f"  ✓ Test: {self.X_test.shape}")
+        
+        # Step 10: Train Random Forest
+        print(f"\n[Step 10/10] Training Random Forest Classifier...")
+        self.fit()
+        
+        print(f"\n{'='*80}")
+        print(f"PIPELINE COMPLETE")
+        print(f"{'='*80}")
+        print(f"✓ Model trained and ready for predictions")
+        print(f"✓ Use predict() to generate regime probabilities")
+        print(f"✓ Use save_model() to persist trained model")
+        print(f"{'='*80}\n")
 
     @classmethod
-    def load_model(cls, model_path: Union[str, Path], use_ready_data: bool = True, verbose: bool = False) -> 'KMRF':
+    def load_model(cls, model_path: Union[str, Path], verbose: bool = False) -> 'KMRF':
         """
         Load a saved KMRF model.
         
@@ -1551,6 +2364,7 @@ class KMRF:
         - Trained Random Forest classifier
         - Selected features (if feature selection was used)
         - Train/val/test data splits
+        - All model data (features, labels, cross-asset features, etc.)
         - All model metadata
         
         After loading, you can immediately use predict() without retraining.
@@ -1558,9 +2372,9 @@ class KMRF:
         Parameters
         ----------
         model_path : str or Path
-            Path to saved model file
-        use_ready_data : bool, default=True
-            Whether to use ready data when initializing
+            Path to saved model file (.pkl)
+        verbose : bool, default=False
+            If True, prints detailed information about the loaded model
             
         Returns
         -------
@@ -1570,14 +2384,13 @@ class KMRF:
         Examples
         --------
         >>> # Load a previously trained model
-        >>> kmrf = KMRF.load_model('saved_models/KMRF/adapted_labels/us_equity/KMRF_SPY_20190101_boruta.pkl')
-        >>> 
-        >>> # Load data for prediction period
-        >>> kmrf.load_data()
-        >>> features = kmrf.get_features()
+        >>> kmrf = KMRF.load_model('saved_models/my_kmrf_model.pkl')
         >>> 
         >>> # Generate predictions immediately (no training needed)
-        >>> predictions = kmrf.predict(kmrf.X_test, return_proba=True)
+        >>> predictions = kmrf.predict()
+        >>> 
+        >>> # Or load with verbose output
+        >>> kmrf = KMRF.load_model('saved_models/my_kmrf_model.pkl', verbose=True)
         """
         model_path = Path(model_path)
         
@@ -1594,27 +2407,37 @@ class KMRF:
             model_data = pickle.load(f)
         
         # Create instance with saved parameters
+        # Note: use_data_type is inferred from saved data presence
         kmrf = cls(
             asset_name=model_data['asset_name'],
             asset_class=model_data['asset_class'],
             end_date=model_data['end_date'],
-            use_ready_data=use_ready_data,
+            use_data_type='master',  # Default, will be overridden by restored data
             validation_start=model_data.get('validation_start'),
             validation_end=model_data.get('validation_end'),
             test_start=model_data.get('test_start'),
-            random_seed=model_data.get('random_seed', 42),
-            classification_type=model_data.get('classification_type', 'adapted')
+            random_seed=model_data.get('random_seed', 1010),
+            classification_type=model_data.get('classification_type', 'adapted'),
+            feature_window_size=model_data.get('feature_window_size', 1),
+            feature_asset_classes=model_data.get('feature_asset_classes'),
+            cross_asset_specific=model_data.get('cross_asset_specific'),
+            rf_params=model_data.get('rf_params')
         )
         
         # Restore model components
         kmrf.rf_model = model_data['rf_model']
-        kmrf.selected_features = model_data['selected_features']
+        kmrf.selected_features = model_data.get('selected_features')
         
-        # Restore train/val/test splits
+        # Restore all data
         kmrf.raw_data = model_data.get('raw_data')
         kmrf.raw_ohlc = model_data.get('ohlc_data')
         kmrf.features = model_data.get('features')
+        kmrf.labels = model_data.get('labels')
+        kmrf.adapted_labels = model_data.get('adapted_labels')
         kmrf.macro_data = model_data.get('macro_data')
+        kmrf.cross_asset_features = model_data.get('cross_asset_features')
+        
+        # Restore train/val/test splits
         kmrf.X_train = model_data.get('X_train')
         kmrf.y_train = model_data.get('y_train')
         kmrf.X_val = model_data.get('X_val')
@@ -1629,7 +2452,8 @@ class KMRF:
             print(f"  Classification type: {kmrf.classification_type}")
             print(f"  Training end date: {kmrf.end_date}")
             print(f"  Features: {len(kmrf.selected_features) if kmrf.selected_features else 'all'}")
-            print(f"  Boruta used: {model_data.get('boruta_used', 'Unknown')}")
+            print(f"  Feature window size: {kmrf.feature_window_size}")
+            print(f"  Feature asset classes: {kmrf.feature_asset_classes}")
 
         if verbose:
             if kmrf.X_train is not None:
