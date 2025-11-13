@@ -139,7 +139,7 @@ class KMRF_Training_Config:
     # =========================================================================
     
     # KAMA+MSR model fitting end date (to avoid lookahead bias)
-    END_DATE = '20190101'  # Jan 1, 2019
+    END_DATE = '20181231'  # Dec 31, 2018
     
     # Train/Validation/Test split dates
     TRAIN_END = pd.to_datetime('2019-01-01')
@@ -367,6 +367,7 @@ class KMRF_Training_Config:
         asset_name: str,
         classification_type: str = 'original',
         use_data_type: str = 'master',
+        end_date: str = '20181231',
         feature_window_size: int = 1,
         feature_asset_classes: Optional[List[str]] = None,
         cross_asset_specific: Optional[List[str]] = None,
@@ -402,6 +403,7 @@ class KMRF_Training_Config:
         self.classification_type = classification_type
         self.use_data_type = use_data_type
         self.feature_window_size = feature_window_size
+        self.END_DATE = end_date
         
         # Validate and store cross_asset_specific
         if cross_asset_specific is not None:
