@@ -218,7 +218,7 @@ class BayesianForwardSimulator:
             boot_skews = []
             boot_kurts = []
             
-            np.random.seed(42)
+            np.random.seed(1010)
             for _ in range(n_boot):
                 boot_sample = returns.sample(n=n, replace=True)
                 boot_skews.append(boot_sample.skew())

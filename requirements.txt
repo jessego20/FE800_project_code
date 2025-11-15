@@ -1,25 +1,44 @@
+# Core data manipulation and numerical computing
 pandas
 numpy
+
+# Web requests and data fetching
 requests
 urllib3
 certifi
+fredapi
+
+# File handling and configuration
 json5
 openpyxl
-typing
-fredapi
 python-dotenv
-ipython
+
+# Scientific computing and statistics
 scipy
 statsmodels
-python-dotenv
+
+# Visualization
 plotly
-ipython
-nbformat
 matplotlib
 seaborn
-numba
+
+# Machine learning and optimization
 scikit-learn
+xgboost
+numba
+
+# Portfolio optimization
+cvxpy
+cvxportfolio
+
+# Time series analysis
 ta
 tsfresh
 boruta
-xgboost
+
+# Parallel processing
+joblib
+
+# Development and notebook support
+ipython
+nbformat
