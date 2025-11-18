@@ -16,6 +16,7 @@ python-dotenv
 # Scientific computing and statistics
 scipy
 statsmodels
+skewt_scipy
 
 # Visualization
 plotly

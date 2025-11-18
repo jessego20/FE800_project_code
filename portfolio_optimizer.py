@@ -47,6 +47,9 @@ class PortfolioOptimizer:
         self,
         mu: pd.Series,
         Sigma: pd.DataFrame,
+        assets: Optional[List[str]] = None,
+        raw_ohlc: Optional[Dict[str, pd.DataFrame]] = None,
+        opt_date: Optional[pd.Timestamp] = None,
         allow_short: bool = False,
         gross_exposure: Optional[float] = None,
         objective: str = 'max_sharpe',
@@ -76,8 +79,10 @@ class PortfolioOptimizer:
         
         self.mu = mu
         self.Sigma = Sigma
-        self.assets = mu.index.tolist()
+        self.assets = assets if assets is not None else mu.index.tolist()
         self.n_assets = len(self.assets)
+        self.raw_ohlc = raw_ohlc
+        self.opt_date = opt_date
         
         # Optimization parameters
         self.objective = objective
@@ -94,7 +99,7 @@ class PortfolioOptimizer:
         if gross_exposure is not None and gross_exposure <= 1.0:
             raise ValueError("gross_exposure must be > 1.0 (e.g., 1.3 for 130/30)")
         
-        # Results storage
+        # Results storage (regime-based)
         self.optimal_weights = None
         self.portfolio_return = None
         self.portfolio_risk = None
@@ -696,6 +701,11 @@ class PortfolioOptimizer:
         """
         mu = results['inputs']['mu']
         Sigma = results['inputs']['Sigma']
+        assets = results['instance'].asset_names
+        raw_ohlc = {}
+        for asset in assets:
+            raw_ohlc[asset] = results['instance'].load_models(asset)[1].raw_ohlc
+        opt_date = results['instance'].load_models(results['instance'].asset_names[0])[0].returns.index[-1]
         
         # Get simulated returns if available (for Sortino ratio)
         simulated_returns = results.get('asset_simulations', None)
@@ -703,6 +713,9 @@ class PortfolioOptimizer:
         return cls(
             mu=mu,
             Sigma=Sigma,
+            assets=assets,
+            raw_ohlc=raw_ohlc,
+            opt_date=opt_date,
             allow_short=allow_short,
             gross_exposure=gross_exposure,
             objective=objective,

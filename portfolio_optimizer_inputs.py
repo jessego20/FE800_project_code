@@ -623,7 +623,7 @@ class PortfolioOptimizerInputs:
         
         return fig
     
-    def save_results(self, output_path: str):
+    def save_results(self, output_path: str, filename: str = 'portfolio_simulation_results.pkl'):
         """
         Save simulation results and optimization inputs to disk.
         
@@ -635,34 +635,37 @@ class PortfolioOptimizerInputs:
         output_path = Path(output_path)
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # Save simulations
-        sims_path = output_path / 'simulations'
-        sims_path.mkdir(exist_ok=True)
+        with open(output_path / filename, 'wb') as f:
+            pickle.dump(self.results, f)
         
-        for asset_name, sim in self.asset_simulations.items():
-            filename = f"{asset_name.replace(' ', '_')}_simulations.csv"
-            sim.to_csv(sims_path / filename)
+        # # Save simulations
+        # sims_path = output_path / 'simulations'
+        # sims_path.mkdir(exist_ok=True)
         
-        # Save optimization inputs
-        if self.mu is not None:
-            self.mu.to_csv(output_path / 'expected_returns.csv', header=['mu'])
+        # for asset_name, sim in self.asset_simulations.items():
+        #     filename = f"{asset_name.replace(' ', '_')}_simulations.csv"
+        #     sim.to_csv(sims_path / filename)
         
-        if self.Sigma is not None:
-            self.Sigma.to_csv(output_path / 'covariance_matrix.csv')
+        # # Save optimization inputs
+        # if self.mu is not None:
+        #     self.mu.to_csv(output_path / 'expected_returns.csv', header=['mu'])
         
-        if self.correlation_matrix is not None:
-            self.correlation_matrix.to_csv(output_path / 'correlation_matrix.csv')
+        # if self.Sigma is not None:
+        #     self.Sigma.to_csv(output_path / 'covariance_matrix.csv')
         
-        # Save summary
-        summary = self.summary()
-        summary.to_csv(output_path / 'summary_statistics.csv')
+        # if self.correlation_matrix is not None:
+        #     self.correlation_matrix.to_csv(output_path / 'correlation_matrix.csv')
         
-        print(f"\n✓ Results saved to {output_path}")
-        print(f"  - {len(self.asset_simulations)} simulation files")
-        print(f"  - Expected returns: expected_returns.csv")
-        print(f"  - Covariance matrix: covariance_matrix.csv")
-        print(f"  - Correlation matrix: correlation_matrix.csv")
-        print(f"  - Summary statistics: summary_statistics.csv")
+        # # Save summary
+        # summary = self.summary()
+        # summary.to_csv(output_path / 'summary_statistics.csv')
+        
+        # print(f"\n✓ Results saved to {output_path}")
+        # print(f"  - {len(self.asset_simulations)} simulation files")
+        # print(f"  - Expected returns: expected_returns.csv")
+        # print(f"  - Covariance matrix: covariance_matrix.csv")
+        # print(f"  - Correlation matrix: correlation_matrix.csv")
+        # print(f"  - Summary statistics: summary_statistics.csv")
     
     @classmethod
     def quick_run(

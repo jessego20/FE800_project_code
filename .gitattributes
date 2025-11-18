@@ -7,3 +7,4 @@ data/ready/macro_data_all.csv filter=lfs diff=lfs merge=lfs -text
 data/master_df.csv filter=lfs diff=lfs merge=lfs -text
 data/master_label_df.csv filter=lfs diff=lfs merge=lfs -text
 saved_models/KMRF_new/original/us_equity/SPDR_S&P_500_ETF_KMRF_model.pkl filter=lfs diff=lfs merge=lfs -text
+simulations/test1_20181231 filter=lfs diff=lfs merge=lfs -text
