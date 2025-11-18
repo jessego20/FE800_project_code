@@ -1,18 +1,3 @@
-"""
-Portfolio Optimizer Inputs Generator
-
-This module generates mean-variance optimization inputs (μ, Σ) for a portfolio of assets
-using Bayesian forward simulations from regime-switching models.
-
-For each asset:
-1. Loads pre-fitted KAMA+MSR and KMRF models
-2. Runs Bayesian forward simulation to generate return paths
-3. Computes expected returns and covariance matrix from simulated paths
-
-Author: Jesse Goodman
-Date: November 2025
-"""
-
 import pandas as pd
 import numpy as np
 import pickle
@@ -757,6 +742,7 @@ class PortfolioOptimizerInputs:
         end_date: str,
         n_days: int = 21,
         n_simulations: int = 10000,
+        alpha_confidence: float = 1.0,
         method: str = 'terminal',
         annualize: bool = True,
         verbose: bool = True,
@@ -805,6 +791,7 @@ class PortfolioOptimizerInputs:
             end_date=end_date,
             n_days=n_days,
             n_simulations=n_simulations,
+            alpha_confidence=alpha_confidence,
             random_seed=random_seed,
             retrain_kmrf=retrain_kmrf,
             use_boruta_selection=use_boruta_selection,

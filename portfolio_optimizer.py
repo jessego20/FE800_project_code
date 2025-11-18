@@ -1,10 +1,3 @@
-"""
-Portfolio Optimization using CVXPortfolio
-
-This module provides a class for computing optimal portfolio weights using 
-mean-variance optimization with various constraints via the CVXPortfolio package.
-"""
-
 import pandas as pd
 import numpy as np
 import cvxportfolio as cvx

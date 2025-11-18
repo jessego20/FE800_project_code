@@ -177,8 +177,17 @@ class BayesianForwardSimulator:
                                    uncertainty_factor * steady_state
         
         # Create DataFrame with proper index
+        # Handle case where fewer than n_days are available
         day_t = self.kama_msr.regime_labels.index[-1].strftime('%Y-%m-%d')
-        new_index = self.kmrf.raw_ohlc.loc[day_t:][1:self.n_days + 1].index
+        available_dates = self.kmrf.raw_ohlc.loc[day_t:][1:].index
+        actual_days = min(self.n_days, len(available_dates))
+        
+        if actual_days < self.n_days:
+            print(f"WARNING: Only {actual_days} days available after {day_t}, " 
+                  f"requested {self.n_days}. Using available days.")
+            forward_probs = forward_probs[:actual_days]
+        
+        new_index = available_dates[:actual_days]
         
         df = pd.DataFrame(
             forward_probs, 
@@ -187,7 +196,7 @@ class BayesianForwardSimulator:
         ).rename_axis('regime', axis=1)
         df['uncertainty_factor'] = [
             1 - a_fit * np.exp(-lambda_decay_fit * delta) 
-            for delta in range(0, self.n_days)
+            for delta in range(0, actual_days)
         ]
         
         self.forward_probs = df
@@ -651,21 +660,23 @@ class BayesianForwardSimulator:
         P = self.transition_matrix.values
         forward_probs_array = self.forward_probs.iloc[:, :4].values
         
-        simulated_returns = np.zeros((n_simulations, self.n_days))
+        # Use actual number of days available (may be < n_days)
+        actual_days = len(forward_probs_array)
+        simulated_returns = np.zeros((n_simulations, actual_days))
         
         for sim in range(n_simulations):
             # Sample initial regime from Bayesian posterior at t+1
             current_probs = forward_probs_array[0].copy()
             current_regime = np.random.choice(4, p=current_probs)
             
-            for day in range(self.n_days):
+            for day in range(actual_days):
                 # Draw return from current regime's distribution
                 dist_params = self.regime_distributions[current_regime]
                 daily_return = self.sample_from_distribution(dist_params, size=1)[0]
                 simulated_returns[sim, day] = daily_return
                 
                 # Bayesian update for next day
-                if day < self.n_days - 1:
+                if day < actual_days - 1:
                     hmm_prior = forward_probs_array[day + 1]
                     transition_likelihood = P[current_regime]
                     
@@ -691,8 +702,11 @@ class BayesianForwardSimulator:
         pd.DataFrame
             True cumulative returns over the forecast horizon
         """
+        # Use actual available days (stored in forward_probs)
+        actual_days = len(self.forward_probs) if self.forward_probs is not None else self.n_days
+        
         true_path = self.kmrf.raw_ohlc.droplevel(0, axis=1)['close']\
-            .loc[self.kama_msr.returns.index[-1]:][:self.n_days + 1]\
+            .loc[self.kama_msr.returns.index[-1]:][:actual_days + 1]\
             .pct_change().dropna()\
             .add(1).cumprod().sub(1)\
             .to_frame().rename(columns={'close': 'True Path'})
