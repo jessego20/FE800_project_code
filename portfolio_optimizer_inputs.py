@@ -60,6 +60,14 @@ class PortfolioOptimizerInputs:
         Significance level for distribution selection
     random_seed : int, default=1010
         Random seed for reproducibility
+    retrain_kmrf : bool, default=False
+        If True, retrain KMRF models using all data available in KAMA_MSR
+        If False, load pre-trained KMRF models from disk
+    use_boruta_selection : bool, default=False
+        If True and retrain_kmrf=True, use Boruta feature selection when training KMRF
+    use_consensus_selection : bool, default=False
+        If True and retrain_kmrf=True, use consensus feature selection when training KMRF
+        Overrides use_boruta_selection if both are True
     
     Attributes
     ----------
@@ -83,9 +91,12 @@ class PortfolioOptimizerInputs:
         models_base_path: str = 'saved_models',
         n_days: int = 21,
         n_simulations: int = 10000,
-        alpha_confidence: float = 0.75,
+        alpha_confidence: float = 1.0,
         significance_level: float = 0.05,
-        random_seed: int = 1010
+        random_seed: int = 1010,
+        retrain_kmrf: bool = False,
+        use_boruta_selection: bool = False,
+        use_consensus_selection: bool = False
     ):
         self.asset_names = asset_names
         self.asset_class = asset_class
@@ -96,10 +107,14 @@ class PortfolioOptimizerInputs:
         self.alpha = alpha_confidence
         self.sig_level = significance_level
         self.random_seed = random_seed
+        self.retrain_kmrf = retrain_kmrf
+        self.use_boruta_selection = use_boruta_selection
+        self.use_consensus_selection = use_consensus_selection
         
         # Storage for results
         self.asset_simulations: Dict[str, pd.DataFrame] = {}
         self.simulators: Dict[str, BayesianForwardSimulator] = {}
+        self.kmrf_models: Dict[str, KMRF] = {}
         self.mu: Optional[pd.Series] = None
         self.Sigma: Optional[pd.DataFrame] = None
         self.correlation_matrix: Optional[pd.DataFrame] = None
@@ -119,6 +134,15 @@ class PortfolioOptimizerInputs:
             raise FileNotFoundError(
                 f"KAMA_MSR path does not exist: {kama_msr_path}"
             )
+        
+        # Only check KMRF path if not retraining
+        if not self.retrain_kmrf:
+            kmrf_path = self.models_base_path / 'KMRF_new' / 'original' / self.asset_class
+            if not kmrf_path.exists():
+                warnings.warn(
+                    f"KMRF path does not exist: {kmrf_path}. "
+                    "Set retrain_kmrf=True to train models dynamically."
+                )
     
     def _get_kama_msr_path(self, asset_name: str) -> Path:
         """Get path to KAMA+MSR model file."""
@@ -131,15 +155,18 @@ class PortfolioOptimizerInputs:
         # Keep asset name as-is, no space replacement
         filename = f"{asset_name}_KMRF_model.pkl"
         return self.models_base_path / 'KMRF_new' / 'original' / self.asset_class / filename
-    
-    def load_models(self, asset_name: str) -> Tuple[KAMA_MSR, KMRF]:
+
+    def load_models(self, asset_name: str, verbose: bool = False, kmrf: bool = False) -> Tuple[KAMA_MSR, KMRF]:
         """
         Load pre-fitted KAMA+MSR and KMRF models for an asset.
+        If retrain_kmrf=True, trains a new KMRF model using data from KAMA_MSR.
         
         Parameters
         ----------
         asset_name : str
             Asset name
+        verbose : bool, default=False
+            Print training progress if retraining KMRF
             
         Returns
         -------
@@ -147,27 +174,88 @@ class PortfolioOptimizerInputs:
             (kama_msr, kmrf) model instances
         """
         kama_msr_path = self._get_kama_msr_path(asset_name)
-        kmrf_path = self._get_kmrf_path(asset_name)
         
-        # Check if files exist
+        # Check if KAMA_MSR file exists
         if not kama_msr_path.exists():
             raise FileNotFoundError(
                 f"KAMA+MSR model not found for {asset_name}: {kama_msr_path}"
-            )
-        if not kmrf_path.exists():
-            raise FileNotFoundError(
-                f"KMRF model not found for {asset_name}: {kmrf_path}"
             )
         
         # Load KAMA+MSR
         with open(kama_msr_path, 'rb') as f:
             kama_msr = pickle.load(f)
         
-        # Load KMRF (suppress output)
-        with contextlib.redirect_stdout(io.StringIO()):
-            kmrf = KMRF.load_model(str(kmrf_path))
+        if not kmrf:
+            return kama_msr, None
+        
+        # Load or retrain KMRF
+        if self.retrain_kmrf:
+            # Train new KMRF using all data available in KAMA_MSR
+            if verbose:
+                print(f"  Training new KMRF model using KAMA_MSR data...")
+            
+            kmrf = self._train_kmrf_from_kama_msr(kama_msr, asset_name, verbose=verbose)
+        else:
+            # Load pre-trained KMRF
+            kmrf_path = self._get_kmrf_path(asset_name)
+            
+            if not kmrf_path.exists():
+                raise FileNotFoundError(
+                    f"KMRF model not found for {asset_name}: {kmrf_path}"
+                )
+            
+            # Load KMRF (suppress output)
+            with contextlib.redirect_stdout(io.StringIO()):
+                kmrf = KMRF.load_model(str(kmrf_path))
         
         return kama_msr, kmrf
+    
+    def _train_kmrf_from_kama_msr(
+        self, 
+        kama_msr: KAMA_MSR, 
+        asset_name: str,
+        verbose: bool = False
+    ) -> KMRF:
+        """
+        Train a new KMRF model using data and regime labels from KAMA_MSR.
+        Uses the KMRF pipeline method for complete training workflow.
+        
+        Parameters
+        ----------
+        kama_msr : KAMA_MSR
+            Fitted KAMA+MSR model containing price data and regime labels
+        asset_name : str
+            Asset name for KMRF initialization
+        verbose : bool, default=False
+            Print training progress
+            
+        Returns
+        -------
+        KMRF
+            Trained KMRF model
+        """
+        # Initialize KMRF with feature selection options
+        kmrf = KMRF(
+            asset_name=asset_name,
+            asset_class=self.asset_class,
+            end_date=self.end_date,
+            random_seed=self.random_seed,
+            classification_type='original',  # Use 4-regime labels from KAMA_MSR
+            use_data_type='master',
+            use_boruta_selection=self.use_boruta_selection,
+            use_consensus_selection=self.use_consensus_selection
+        )
+        
+        # Run the complete pipeline
+        if verbose:
+            # Show training output
+            kmrf.pipeline()
+        else:
+            # Suppress training output
+            with contextlib.redirect_stdout(io.StringIO()):
+                kmrf.pipeline()
+        
+        return kmrf
     
     def simulate_asset(
         self, 
@@ -197,7 +285,7 @@ class PortfolioOptimizerInputs:
         # Load models
         if verbose:
             print(f"Loading models...")
-        kama_msr, kmrf = self.load_models(asset_name)
+        kama_msr, kmrf = self.load_models(asset_name, kmrf=True)
         
         # Create simulator
         simulator = BayesianForwardSimulator(
@@ -231,10 +319,11 @@ class PortfolioOptimizerInputs:
         # Store results
         self.asset_simulations[asset_name] = simulated_returns
         self.simulators[asset_name] = simulator
+        self.kmrf_models[asset_name] = kmrf
         
         if verbose:
             # Compute some summary stats
-            terminal_returns = simulated_returns.add(1).cumprod(axis=0).iloc[-1]
+            terminal_returns = simulated_returns.add(1).cumprod(axis=0).sub(1).iloc[-1]
             print(f"\nTerminal {self.n_days}-day return statistics:")
             print(f"  Mean: {terminal_returns.mean():.4f}")
             print(f"  Std:  {terminal_returns.std():.4f}")
@@ -408,7 +497,7 @@ class PortfolioOptimizerInputs:
     def get_optimization_inputs(
         self,
         method: str = 'path_covariance',
-        annualize: bool = False
+        annualize: bool = True
     ) -> Dict[str, pd.DataFrame]:
         """
         Get all inputs needed for portfolio optimization in a convenient format.
@@ -482,7 +571,7 @@ class PortfolioOptimizerInputs:
         
         for asset_name, sim in self.asset_simulations.items():
             # Compute terminal returns
-            terminal_returns = sim.add(1).cumprod(axis=0).iloc[-1]
+            terminal_returns = sim.add(1).cumprod(axis=0).sub(1).iloc[-1]
             
             summary_data.append({
                 'asset': asset_name,
@@ -623,15 +712,8 @@ class PortfolioOptimizerInputs:
         
         return fig
     
+    '''
     def save_results(self, output_path: str, filename: str = 'portfolio_simulation_results.pkl'):
-        """
-        Save simulation results and optimization inputs to disk.
-        
-        Parameters
-        ----------
-        output_path : str
-            Directory path to save results
-        """
         output_path = Path(output_path)
         output_path.mkdir(parents=True, exist_ok=True)
         
@@ -666,7 +748,7 @@ class PortfolioOptimizerInputs:
         # print(f"  - Covariance matrix: covariance_matrix.csv")
         # print(f"  - Correlation matrix: correlation_matrix.csv")
         # print(f"  - Summary statistics: summary_statistics.csv")
-    
+    '''
     @classmethod
     def quick_run(
         cls,
@@ -676,9 +758,12 @@ class PortfolioOptimizerInputs:
         n_days: int = 21,
         n_simulations: int = 10000,
         method: str = 'terminal',
-        annualize: bool = False,
+        annualize: bool = True,
         verbose: bool = True,
-        random_seed: int = 1010
+        random_seed: int = 1010,
+        retrain_kmrf: bool = False,
+        use_boruta_selection: bool = False,
+        use_consensus_selection: bool = False
     ) -> Dict:
         """
         Quick run: simulate all assets and return optimization inputs.
@@ -701,6 +786,12 @@ class PortfolioOptimizerInputs:
             Annualize returns
         verbose : bool, default=True
             Print progress
+        retrain_kmrf : bool, default=False
+            If True, retrain KMRF models using KAMA_MSR data instead of loading pre-trained
+        use_boruta_selection : bool, default=False
+            If True and retrain_kmrf=True, use Boruta feature selection
+        use_consensus_selection : bool, default=False
+            If True and retrain_kmrf=True, use consensus feature selection (overrides Boruta)
             
         Returns
         -------
@@ -714,7 +805,10 @@ class PortfolioOptimizerInputs:
             end_date=end_date,
             n_days=n_days,
             n_simulations=n_simulations,
-            random_seed=random_seed
+            random_seed=random_seed,
+            retrain_kmrf=retrain_kmrf,
+            use_boruta_selection=use_boruta_selection,
+            use_consensus_selection=use_consensus_selection
         )
         
         # Run simulations

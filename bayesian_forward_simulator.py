@@ -69,7 +69,7 @@ class BayesianForwardSimulator:
         kama_msr: KAMA_MSR,
         kmrf: KMRF,
         n_days: int = 21,
-        alpha_confidence: float = 0.75,
+        alpha_confidence: float = 1.0,
         significance_level: float = 0.05
     ):
         self.kama_msr = kama_msr
@@ -77,6 +77,10 @@ class BayesianForwardSimulator:
         self.n_days = n_days
         self.alpha = alpha_confidence
         self.sig_level = significance_level
+        
+        # Storage for predictions and diagnostics
+        self.all_oos_predictions = None
+        self.prediction_date = None
         
         # These will be populated by compute methods
         self.forward_probs: Optional[pd.DataFrame] = None
@@ -131,7 +135,22 @@ class BayesianForwardSimulator:
             steady_state /= steady_state.sum()
             
             # Get KMRF likelihood at t+1
-            kmrf_likelihood_t1 = self.kmrf.predict(test_or_val='val').iloc[0]\
+            # Get the current date from KAMA_MSR and find the next trading day
+            current_date = self.kama_msr.regime_labels.index[-1]
+            
+            # Get all out-of-sample predictions from KMRF
+            all_oos_predictions = self.kmrf.predict_all_oos()
+            
+            # Find the next trading day after current_date in the predictions
+            future_dates = all_oos_predictions.index[all_oos_predictions.index > current_date]
+            if len(future_dates) == 0:
+                raise ValueError(
+                    f"No out-of-sample predictions available after {current_date}. "
+                    f"KMRF predictions range: {all_oos_predictions.index[0]} to {all_oos_predictions.index[-1]}"
+                )
+            
+            next_trading_day = future_dates[0]
+            kmrf_likelihood_t1 = all_oos_predictions.loc[next_trading_day]\
                 .reset_index(drop=True).rename('')
             
             # HMM prior: P(regime_t+1 | regime_t)

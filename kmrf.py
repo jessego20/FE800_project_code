@@ -71,9 +71,7 @@ class KMRF:
         kama_msr_model_dir: Optional[Union[str, Path]] = None,
         end_date: str = '20181231',
         use_data_type: str = 'master',
-        validation_start: str = '2019-01-02',
-        validation_end: str = '2021-12-31',
-        test_start: str = '2022-01-02',
+        test_end_date: Optional[str] = None,
         random_seed: int = 1010,
         classification_type: str = 'adapted',
         feature_window_size: int = 1,
@@ -96,19 +94,17 @@ class KMRF:
             Path to the data file
         kama_msr_model_dir : str or Path, optional
             Path to the KAMA+MSR model directory
-        end_date : str, default='20190101'
-            End date for KAMA+MSR model selection
-        use_data_type : str, default='ready'
+        end_date : str, default='20181231'
+            End date for KAMA+MSR model selection (training end date)
+        use_data_type : str, default='master'
             Type of data to use for loading features:
             - 'master': Load from master_df.csv (consolidated file with all assets)
             - 'ready': Load from pre-computed features in 'ready' folder
             - 'raw': Compute features from raw OHLC data (not yet implemented)
-        validation_start : str, default='2019-04-01'
-            Start date for validation period
-        validation_end : str, default='2019-09-30'
-            End date for validation period
-        test_start : str, default='2020-01-01'
-            Start date for test period (extends to end of available data)
+        test_end_date : str, optional
+            End date for the test period. If None, uses all available data after training.
+            The remaining data after end_date will be split equally into validation and test sets.
+            If provided, test set ends at this date; validation set is sized to match test set duration.
         random_seed : int, default=1010
             Random seed for reproducibility
         classification_type : str, default='adapted'
@@ -139,13 +135,13 @@ class KMRF:
         self.asset_class = asset_class
         self.classification_type = classification_type
         self.end_date = end_date
+        self.test_end_date = test_end_date
         self.random_seed = random_seed
         self.use_data_type = use_data_type
         
         # Feature selection flags
         self.use_boruta_selection = use_boruta_selection
         self.use_consensus_selection = use_consensus_selection
-        self.use_data_type = use_data_type
         
         # Validate use_data_type
         if use_data_type not in ['master', 'ready', 'raw']:
@@ -159,10 +155,11 @@ class KMRF:
         self.cross_asset_specific = cross_asset_specific if cross_asset_specific is not None else []
         self.xgb_params = xgb_params if xgb_params is not None else {}
 
-        # Data split dates
-        self.validation_start = pd.to_datetime(validation_start)
-        self.validation_end = pd.to_datetime(validation_end)
-        self.test_start = pd.to_datetime(test_start)
+        # Data split dates (will be set after loading data)
+        self.validation_start: Optional[pd.Timestamp] = None
+        self.validation_end: Optional[pd.Timestamp] = None
+        self.test_start: Optional[pd.Timestamp] = None
+        self.test_end: Optional[pd.Timestamp] = None
         
         # Validate classification type
         if classification_type not in ['adapted', 'original']:
@@ -232,12 +229,12 @@ class KMRF:
         print(f"  Asset: {self.asset_name}")
         print(f"  Asset class: {self.asset_class}")
         print(f"  Classification type: {self.classification_type}")
-        print(f"  End date: {self.end_date}")
+        print(f"  Training end date: {self.end_date}")
+        print(f"  Test end date: {self.test_end_date if self.test_end_date else 'All available data'}")
         print(f"  Data type: {self.use_data_type}")
         print(f"  Data path: {self.data_path}")
         print(f"  KAMA+MSR model directory: {self.kama_msr_model_dir}")
-        print(f"  Validation period: {validation_start} to {validation_end}")
-        print(f"  Test start: {test_start}")
+        print(f"  Validation/Test split: Will be calculated after loading data")
         print(f"  Random seed: {self.random_seed}")
         print(f"  Feature window size: {self.feature_window_size} days")
         print(f"  Feature asset classes: {self.feature_asset_classes}")
@@ -1534,6 +1531,80 @@ class KMRF:
             
             return X, y
     
+    def _calculate_split_dates(self, X: pd.DataFrame) -> None:
+        """
+        Calculate validation and test split dates based on end_date and available data.
+        
+        The remaining data after end_date is split equally into validation and test sets.
+        If test_end_date is provided, it defines the end of test set and validation is
+        sized to match the test set duration.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame
+            Feature matrix with date index to determine available data range
+        """
+        train_end = pd.to_datetime(self.end_date)
+        
+        # Get all available dates after training
+        oos_dates = X.index[X.index > train_end]
+        
+        if len(oos_dates) == 0:
+            raise ValueError(
+                f"No out-of-sample data available after end_date {self.end_date}. "
+                f"Data range: {X.index[0]} to {X.index[-1]}"
+            )
+        
+        oos_start = oos_dates[0]
+        
+        if self.test_end_date is not None:
+            # User specified test end date
+            test_end = pd.to_datetime(self.test_end_date)
+            
+            # Find actual dates within the available data
+            test_dates = oos_dates[oos_dates <= test_end]
+            if len(test_dates) == 0:
+                raise ValueError(
+                    f"No test data available up to test_end_date {self.test_end_date}. "
+                    f"OOS data starts at {oos_start}"
+                )
+            
+            self.test_end = test_dates[-1]
+            test_duration = len(test_dates)
+            
+            # Split remaining OOS dates equally: first half = validation, second half = test
+            # But ensure test set has the specified duration
+            all_oos_count = len(oos_dates[oos_dates <= test_end])
+            val_count = all_oos_count - test_duration
+            
+            if val_count <= 0:
+                raise ValueError(
+                    f"Insufficient data for validation set. Total OOS samples: {all_oos_count}, "
+                    f"Test samples needed: {test_duration}"
+                )
+            
+            self.validation_start = oos_start
+            self.validation_end = oos_dates[val_count - 1]
+            self.test_start = oos_dates[val_count]
+            
+        else:
+            # No test_end_date specified - split remaining data equally
+            oos_end = oos_dates[-1]
+            self.test_end = oos_end
+            
+            # Split OOS dates in half
+            oos_count = len(oos_dates)
+            mid_point = oos_count // 2
+            
+            self.validation_start = oos_start
+            self.validation_end = oos_dates[mid_point - 1]
+            self.test_start = oos_dates[mid_point]
+        
+        print(f"  Calculated split dates:")
+        print(f"    Training end   : {train_end.date()}")
+        print(f"    Validation     : {self.validation_start.date()} to {self.validation_end.date()} ({len(oos_dates[(oos_dates >= self.validation_start) & (oos_dates <= self.validation_end)])} samples)")
+        print(f"    Test           : {self.test_start.date()} to {self.test_end.date()} ({len(oos_dates[(oos_dates >= self.test_start) & (oos_dates <= self.test_end)])} samples)")
+    
     def split_train_val_test(
         self,
         X: pd.DataFrame,
@@ -1552,6 +1623,9 @@ class KMRF:
         Validation and test sets have features but no labels - they're used for
         generating predictions from the trained model.
         
+        If validation/test dates haven't been calculated yet, they will be computed
+        automatically to split remaining data equally.
+        
         Parameters
         ----------
         X : pd.DataFrame
@@ -1563,15 +1637,20 @@ class KMRF:
         boruta_params : dict, optional
             Parameters for Boruta
         """
-        print(f"  Train/Validation/Test Split:")
+        # Calculate split dates if not already set
+        if self.validation_start is None:
+            print(f"  Calculating validation/test split dates...")
+            self._calculate_split_dates(X)
+        
+        print(f"\n  Train/Validation/Test Split:")
         print(f"    Training   : Before {self.validation_start.date()}")
         print(f"    Validation : {self.validation_start.date()} to {self.validation_end.date()}")
-        print(f"    Test       : {self.test_start.date()} to End")
+        print(f"    Test       : {self.test_start.date()} to {self.test_end.date()}")
         
         # Split features by dates FIRST (features have full date range)
         train_dates_mask = X.index < self.validation_start
         val_mask = (X.index >= self.validation_start) & (X.index <= self.validation_end)
-        test_mask = X.index >= self.test_start
+        test_mask = (X.index >= self.test_start) & (X.index <= self.test_end)
         
         # Get training features where dates < validation_start
         X_train_dates = X[train_dates_mask].copy()
@@ -1662,6 +1741,23 @@ class KMRF:
                               val_end: pd.Timestamp | str, 
                               test_start: pd.Timestamp | str, 
                               test_end: pd.Timestamp | str) -> None:
+        """
+        Manually adjust validation and test date ranges after data has been split.
+        
+        This is useful for fine-tuning splits or aligning with specific calendar periods
+        after the automatic split has been performed.
+        
+        Parameters
+        ----------
+        val_start : pd.Timestamp or str
+            New validation start date
+        val_end : pd.Timestamp or str
+            New validation end date
+        test_start : pd.Timestamp or str
+            New test start date
+        test_end : pd.Timestamp or str
+            New test end date
+        """
         if self.X_train is None:
             raise ValueError("Training data not available. Cannot adjust validation/test dates.")
 
@@ -1681,6 +1777,7 @@ class KMRF:
         self.validation_start = pd.to_datetime(val_start)
         self.validation_end = pd.to_datetime(val_end)
         self.test_start = pd.to_datetime(test_start)
+        self.test_end = pd.to_datetime(test_end)
 
     def __repr__(self) -> str:
         """String representation of the KMRF model."""
@@ -2058,9 +2155,128 @@ class KMRF:
 
         print(f"✓ Generated probability predictions: {result.shape}")
         if test_or_val.lower() == 'test':
-            self.y_test_proba = result
+            print(f"  Using test set: {result.index[0]} to {result.index[-1]}")
         else:
-            self.y_val_proba = result
+            print(f"  Using validation set: {result.index[0]} to {result.index[-1]}")
+        
+        return result
+    
+    def predict_all_oos(self, X: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        """
+        Generate regime predictions for all out-of-sample data (validation + test).
+        
+        This method produces ex-ante regime predictions for all dates after training,
+        allowing access to predictions at any specific date in the out-of-sample period.
+        Useful for walk-forward analysis where you need predictions at a specific rebalance date.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame, optional
+            Feature matrix for prediction. If None, concatenates X_val and X_test
+            
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with date index and columns for probability of each regime class
+            Index corresponds to the dates in the out-of-sample period
+            
+        Notes
+        -----
+        This is useful when KMRF was trained up to date T, but you want to get
+        predictions for a specific date T+k where k could be anywhere in the
+        validation or test set. The standard predict() method only returns
+        predictions starting from the first validation date.
+        
+        Examples
+        --------
+        >>> # Get all out-of-sample predictions
+        >>> all_predictions = kmrf.predict_all_oos()
+        >>> 
+        >>> # Get prediction for a specific date
+        >>> prediction_at_date = all_predictions.loc['2019-01-31']
+        """
+        if self.xgb_model is None:
+            raise ValueError("Model not trained. Call fit() first or load a saved model.")
+        
+        if X is None:
+            if self.X_val is None and self.X_test is None:
+                raise ValueError(
+                    "No validation or test data available. Either provide X or run "
+                    "prepare_training_data() with split_data=True."
+                )
+            
+            # Concatenate validation and test sets
+            X_list = []
+            if self.X_val is not None:
+                X_list.append(self.X_val)
+            if self.X_test is not None:
+                X_list.append(self.X_test)
+            
+            X = pd.concat(X_list, axis=0)
+        
+        print(f"\nGenerating predictions for all out-of-sample data...")
+        print(f"  Input shape: {X.shape}")
+        print(f"  Date range: {X.index[0]} to {X.index[-1]}")
+        
+        # Apply feature selection if model was trained with selected features
+        if self.selected_features is not None and len(self.selected_features) > 0:
+            missing_features = set(self.selected_features) - set(X.columns)
+            if missing_features:
+                print(f"  Applying feature selection: {len(self.selected_features)} features")
+                X = X[self.selected_features]
+            else:
+                print(f"  Using pre-selected features: {len(X.columns)}")
+        
+        # Flatten multi-index columns if present
+        X_flat = X.copy()
+        X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
+                          for col in X.columns]
+        
+        # Handle NaN values
+        X_clean = X_flat.fillna(method='ffill').fillna(method='bfill')
+        
+        # Get probabilities for each class
+        proba = self.xgb_model.predict_proba(X_clean.values)
+        
+        # Create DataFrame with meaningful column names
+        if self.classification_type == 'adapted':
+            regime_names = {-1: 'P(Bear)', 0: 'P(Other)', 1: 'P(Bull)'}
+            columns = []
+            for xgb_class in self.xgb_model.classes_:
+                original_regime = self._inverse_label_mapping[int(xgb_class)]
+                columns.append(regime_names[original_regime])
+            all_columns = [regime_names[i] for i in [-1, 0, 1]]
+        else:  # original
+            regime_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
+            columns = []
+            for xgb_class in self.xgb_model.classes_:
+                original_regime = self._inverse_label_mapping[int(xgb_class)]
+                columns.append(regime_names[original_regime])
+            all_columns = [regime_names[i] for i in range(4)]
+        
+        result = pd.DataFrame(
+            proba,
+            index=X.index,
+            columns=columns
+        )
+        
+        if self.classification_type == 'original':
+            # Ensure all 4 regime columns are present
+            for col in all_columns:
+                if col not in result.columns:
+                    result[col] = 0.0
+        elif self.classification_type == 'adapted':
+            # Ensure all 3 regime columns are present
+            for col in all_columns:
+                if col not in result.columns:
+                    result[col] = 0.0
+        
+        # Reorder columns
+        result = result[all_columns]
+        
+        print(f"✓ Generated predictions for all OOS data: {result.shape}")
+        print(f"  Date range: {result.index[0]} to {result.index[-1]}")
+        
         return result
     
     def viz_predictions(self, test_or_val: str = 'test') -> None:

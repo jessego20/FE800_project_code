@@ -659,8 +659,8 @@ class PortfolioOptimizer:
                       c='red', marker='*', s=500, 
                       label=f'Optimal Portfolio (SR={self.sharpe_ratio:.2f})',
                       edgecolors='black', linewidths=1.5, zorder=5)
-        
-        ax.set_xlabel('Risk (Volatility)', fontsize=12)
+
+        ax.set_xlabel('Predicted Risk (Volatility)', fontsize=12)
         ax.set_ylabel('Expected Return', fontsize=12)
         ax.set_title('Efficient Frontier', fontsize=14, fontweight='bold')
         ax.legend(loc='best', fontsize=10)
@@ -704,7 +704,10 @@ class PortfolioOptimizer:
         assets = results['instance'].asset_names
         raw_ohlc = {}
         for asset in assets:
-            raw_ohlc[asset] = results['instance'].load_models(asset)[1].raw_ohlc
+            if asset in results['instance'].kmrf_models:
+                raw_ohlc[asset] = results['instance'].kmrf_models[asset].raw_ohlc
+            else:
+                raw_ohlc[asset] = results['instance'].load_models(asset, kmrf=True)[1].raw_ohlc
         opt_date = results['instance'].load_models(results['instance'].asset_names[0])[0].returns.index[-1]
         
         # Get simulated returns if available (for Sortino ratio)
