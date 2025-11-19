@@ -12,17 +12,23 @@ class PortfolioOptimizer:
     """
     Portfolio optimizer with multiple objective functions.
     
+    Phase 4+ Integration: Works seamlessly with copula-based multi-asset simulations
+    from PortfolioOptimizerInputs. Recommended usage: create via from_portfolio_inputs().
+    
     Parameters
     ----------
     mu : pd.Series
         Expected returns for each asset (indexed by asset names)
+        Typically computed from copula simulations via compute_portfolio_inputs()
     Sigma : pd.DataFrame
         Covariance matrix of returns (index and columns are asset names)
+        Preserves regime-dependent correlations when using copula simulations
     allow_short : bool, default=False
         Whether to allow short selling
     gross_exposure : float, optional
         Maximum gross exposure (sum of absolute weights) if shorting is allowed
         If None and allow_short=True, no gross exposure limit is applied
+        Example: 1.3 for 130/30 strategy (130% long, 30% short)
     objective : str, default='max_sharpe'
         Optimization objective:
         - 'max_sharpe': Maximize Sharpe ratio (uses non-convex solver)
@@ -32,10 +38,37 @@ class PortfolioOptimizer:
         Risk aversion parameter (gamma) for 'risk_aversion' objective
         Required if objective='risk_aversion'
         Higher values → more risk-averse → lower risk, lower return
-    simulated_returns : pd.DataFrame, optional
+    simulated_returns : Dict[str, pd.DataFrame], optional
         Simulated return paths for Sortino ratio calculation
         Required if objective='max_sortino'
-        Shape: (n_days, n_simulations) for each asset
+        Format: {asset_name: DataFrame(n_days, n_simulations)}
+        Automatically provided when using from_portfolio_inputs()
+    
+    Examples
+    --------
+    >>> # Recommended Phase 4+ workflow
+    >>> from portfolio_optimizer_inputs import PortfolioOptimizerInputs
+    >>> from portfolio_optimizer import PortfolioOptimizer
+    >>> 
+    >>> # Step 1: Simulate with copula (preserves correlations)
+    >>> portfolio = PortfolioOptimizerInputs(
+    ...     asset_names=['SPDR S&P 500 ETF', 'iShares Russell 2000 ETF'],
+    ...     asset_class='us_equity',
+    ...     end_date='20241101',
+    ...     n_simulations=10000
+    ... )
+    >>> portfolio.simulate_all_assets()  # Uses copula by default
+    >>> 
+    >>> # Step 2: Create optimizer from portfolio inputs
+    >>> optimizer = PortfolioOptimizer.from_portfolio_inputs(
+    ...     portfolio,
+    ...     objective='max_sharpe'
+    ... )
+    >>> 
+    >>> # Step 3: Optimize and analyze
+    >>> weights = optimizer.optimize()
+    >>> print(optimizer.summary())
+    >>> optimizer.plot_weights()
     """
     
     def __init__(
@@ -102,21 +135,114 @@ class PortfolioOptimizer:
         self.portfolio_risk = None
         self.sharpe_ratio = None
         
-    def optimize(self) -> pd.Series:
+    def optimize(self, verbose: bool = False) -> pd.Series:
         """
         Compute optimal portfolio weights based on specified objective.
+        
+        Parameters
+        ----------
+        verbose : bool, default=False
+            Print optimization progress and results
         
         Returns
         -------
         pd.Series
             Optimal weights indexed by asset names
+            
+        Notes
+        -----
+        Phase 4+: When using copula simulations, the optimization preserves
+        the regime-dependent correlation structure captured during simulation.
         """
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"PORTFOLIO OPTIMIZATION")
+            print(f"{'='*80}")
+            print(f"Objective: {self.objective}")
+            print(f"Assets: {self.n_assets}")
+            print(f"Short selling: {'Allowed' if self.allow_short else 'Not allowed'}")
+            if self.allow_short and self.gross_exposure:
+                print(f"Gross exposure limit: {self.gross_exposure:.1%}")
+        
         if self.objective == 'max_sharpe':
-            return self._optimize_max_sharpe()
+            result = self._optimize_max_sharpe()
         elif self.objective == 'max_sortino':
-            return self._optimize_max_sortino()
+            result = self._optimize_max_sortino()
         else:  # risk_aversion
-            return self._optimize_risk_aversion()
+            result = self._optimize_risk_aversion()
+        
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"OPTIMIZATION RESULTS")
+            print(f"{'='*80}")
+            print(f"Portfolio Return: {self.portfolio_return:.4f}")
+            print(f"Portfolio Risk: {self.portfolio_risk:.4f}")
+            print(f"Sharpe Ratio: {self.sharpe_ratio:.4f}")
+            if self.sortino_ratio is not None:
+                print(f"Sortino Ratio: {self.sortino_ratio:.4f}")
+            print(f"\nTop 5 Positions:")
+            top_weights = self.optimal_weights.abs().nlargest(5)
+            for asset, weight in top_weights.items():
+                actual_weight = self.optimal_weights[asset]
+                print(f"  {asset}: {actual_weight:>8.2%}")
+            print(f"{'='*80}")
+        
+        return result
+    
+    @classmethod
+    def quick_optimize(
+        cls,
+        portfolio_inputs: PortfolioOptimizerInputs,
+        objective: str = 'max_sharpe',
+        allow_short: bool = False,
+        gross_exposure: Optional[float] = None,
+        risk_aversion: Optional[float] = 0.5,
+        verbose: bool = True
+    ) -> 'PortfolioOptimizer':
+        """
+        One-line optimization workflow for Phase 4+ copula simulations.
+        
+        Convenience method that creates optimizer and runs optimization in one call.
+        
+        Parameters
+        ----------
+        portfolio_inputs : PortfolioOptimizerInputs
+            Instance with completed simulations
+        objective : str, default='max_sharpe'
+            Optimization objective
+        allow_short : bool, default=False
+            Whether to allow short selling
+        gross_exposure : float, optional
+            Maximum gross exposure if shorting allowed
+        risk_aversion : float, optional
+            Risk aversion parameter (for 'risk_aversion' objective)
+        verbose : bool, default=True
+            Print optimization results
+            
+        Returns
+        -------
+        PortfolioOptimizer
+            Optimizer with optimal weights already computed
+            
+        Examples
+        --------
+        >>> # Ultra-simple workflow
+        >>> portfolio = PortfolioOptimizerInputs(...)
+        >>> portfolio.simulate_all_assets()
+        >>> optimizer = PortfolioOptimizer.quick_optimize(portfolio)
+        >>> print(optimizer.summary())
+        """
+        optimizer = cls.from_portfolio_inputs(
+            portfolio_inputs=portfolio_inputs,
+            allow_short=allow_short,
+            gross_exposure=gross_exposure,
+            objective=objective,
+            risk_aversion=risk_aversion
+        )
+        
+        optimizer.optimize(verbose=verbose)
+        
+        return optimizer
     
     def _optimize_risk_aversion(self) -> pd.Series:
         """
@@ -667,6 +793,106 @@ class PortfolioOptimizer:
         return fig, ax
     
     @classmethod
+    def from_portfolio_inputs(
+        cls,
+        portfolio_inputs: PortfolioOptimizerInputs,
+        allow_short: bool = False,
+        gross_exposure: Optional[float] = None,
+        objective: str = 'max_sharpe',
+        risk_aversion: Optional[float] = 0.5,
+        compute_inputs: bool = False,
+        method: str = 'terminal'
+    ):
+        """
+        Create optimizer from PortfolioOptimizerInputs instance.
+        
+        Phase 4+ Integration: Works seamlessly with copula-based simulations.
+        
+        Parameters
+        ----------
+        portfolio_inputs : PortfolioOptimizerInputs
+            Instance with completed simulations
+        allow_short : bool, default=False
+            Whether to allow short selling
+        gross_exposure : float, optional
+            Maximum gross exposure if shorting allowed (e.g., 1.3 for 130/30)
+        objective : str, default='max_sharpe'
+            Optimization objective: 'max_sharpe', 'max_sortino', or 'risk_aversion'
+        risk_aversion : float, optional
+            Risk aversion parameter (required if objective='risk_aversion')
+        compute_inputs : bool, default=False
+            Whether to force recomputation of mu and Sigma even if already available.
+            If False (default), uses existing values from portfolio_inputs if available.
+            If True, recomputes using the specified method (may overwrite annualized values).
+            Values are always computed if they don't exist regardless of this setting.
+        method : str, default='terminal'
+            Method for computing covariance: 'terminal', 'daily_avg', or 'path_covariance'
+            
+        Returns
+        -------
+        PortfolioOptimizer
+            Initialized optimizer instance ready for optimization
+            
+        Examples
+        --------
+        >>> # Phase 4 workflow
+        >>> portfolio = PortfolioOptimizerInputs(
+        ...     asset_names=['SPDR S&P 500 ETF', 'iShares Russell 2000 ETF'],
+        ...     asset_class='us_equity',
+        ...     end_date='20241101'
+        ... )
+        >>> portfolio.simulate_all_assets()  # Uses copula by default
+        >>> optimizer = PortfolioOptimizer.from_portfolio_inputs(portfolio)
+        >>> weights = optimizer.optimize()
+        """
+        # Compute mu and Sigma if needed
+        # If values already exist, only recompute if explicitly requested with compute_inputs=True
+        # and values are missing
+        if portfolio_inputs.mu is None or portfolio_inputs.Sigma is None:
+            # Values don't exist - must compute
+            portfolio_inputs.compute_portfolio_inputs(method=method)
+        elif compute_inputs:
+            # Values exist but user explicitly requested recomputation
+            # This allows overriding existing values if needed
+            portfolio_inputs.compute_portfolio_inputs(method=method)
+        # else: Use existing values (default behavior when values exist)
+        
+        mu = portfolio_inputs.mu
+        Sigma = portfolio_inputs.Sigma
+        assets = portfolio_inputs.asset_names
+        
+        # Get simulated returns (convert DataFrame format to dict for Sortino)
+        simulated_returns = None
+        if objective == 'max_sortino' and portfolio_inputs.asset_simulations:
+            simulated_returns = portfolio_inputs.asset_simulations
+        
+        # Get raw OHLC and optimization date from first asset
+        raw_ohlc = {}
+        opt_date = None
+        
+        if portfolio_inputs.simulators:
+            # Extract from simulators if available
+            for asset_name, simulator in portfolio_inputs.simulators.items():
+                if hasattr(simulator, 'kmrf') and simulator.kmrf is not None:
+                    raw_ohlc[asset_name] = simulator.kmrf.raw_ohlc
+                    if opt_date is None:
+                        opt_date = simulator.kama_msr.returns.index[-1]
+        
+        return cls(
+            mu=mu,
+            Sigma=Sigma,
+            assets=assets,
+            raw_ohlc=raw_ohlc if raw_ohlc else None,
+            opt_date=opt_date,
+            allow_short=allow_short,
+            gross_exposure=gross_exposure,
+            objective=objective,
+            risk_aversion=risk_aversion,
+            simulated_returns=simulated_returns,
+            optimizer_inputs_instance=portfolio_inputs
+        )
+    
+    @classmethod
     def from_optimizer_inputs(
         cls,
         results: Dict,
@@ -676,12 +902,14 @@ class PortfolioOptimizer:
         risk_aversion: Optional[float] = 0.5
     ):
         """
-        Create optimizer from PortfolioOptimizerInputs results.
+        Create optimizer from PortfolioOptimizerInputs results dictionary.
+        
+        DEPRECATED: Use from_portfolio_inputs() instead for cleaner API.
         
         Parameters
         ----------
         results : dict
-            Results dictionary from PortfolioOptimizerInputs.quick_run()
+            Results dictionary from legacy quick_run() method
         allow_short : bool, default=False
             Whether to allow short selling
         gross_exposure : float, optional
@@ -696,31 +924,31 @@ class PortfolioOptimizer:
         PortfolioOptimizer
             Initialized optimizer instance
         """
-        mu = results['inputs']['mu']
-        Sigma = results['inputs']['Sigma']
-        assets = results['instance'].asset_names
-        optimizer_inputs_instance = results['instance']
-        raw_ohlc = {}
-        for asset in assets:
-            if asset in results['instance'].kmrf_models:
-                raw_ohlc[asset] = results['instance'].kmrf_models[asset].raw_ohlc
-            else:
-                raw_ohlc[asset] = results['instance'].load_models(asset, kmrf=True)[1].raw_ohlc
-        opt_date = results['instance'].load_models(results['instance'].asset_names[0])[0].returns.index[-1]
-        
-        # Get simulated returns if available (for Sortino ratio)
-        simulated_returns = results.get('asset_simulations', None)
-        
-        return cls(
-            mu=mu,
-            Sigma=Sigma,
-            assets=assets,
-            raw_ohlc=raw_ohlc,
-            opt_date=opt_date,
-            allow_short=allow_short,
-            gross_exposure=gross_exposure,
-            objective=objective,
-            risk_aversion=risk_aversion,
-            simulated_returns=simulated_returns,
-            optimizer_inputs_instance=optimizer_inputs_instance
-        )
+        # Extract PortfolioOptimizerInputs instance
+        if 'instance' in results:
+            portfolio_inputs = results['instance']
+            return cls.from_portfolio_inputs(
+                portfolio_inputs=portfolio_inputs,
+                allow_short=allow_short,
+                gross_exposure=gross_exposure,
+                objective=objective,
+                risk_aversion=risk_aversion,
+                compute_inputs=False  # Already computed in results
+            )
+        else:
+            # Legacy fallback
+            mu = results['inputs']['mu']
+            Sigma = results['inputs']['Sigma']
+            assets = results.get('assets', mu.index.tolist())
+            simulated_returns = results.get('asset_simulations', None)
+            
+            return cls(
+                mu=mu,
+                Sigma=Sigma,
+                assets=assets,
+                allow_short=allow_short,
+                gross_exposure=gross_exposure,
+                objective=objective,
+                risk_aversion=risk_aversion,
+                simulated_returns=simulated_returns
+            )
