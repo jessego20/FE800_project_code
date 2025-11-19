@@ -6,4 +6,4 @@ data/ready/universe_etfs.csv filter=lfs diff=lfs merge=lfs -text
 data/ready/macro_data_all.csv filter=lfs diff=lfs merge=lfs -text
 data/master_df.csv filter=lfs diff=lfs merge=lfs -text
 data/master_label_df.csv filter=lfs diff=lfs merge=lfs -text
-simulations/** filter=lfs diff=lfs merge=lfs -text
+backtests/** filter=lfs diff=lfs merge=lfs -text
