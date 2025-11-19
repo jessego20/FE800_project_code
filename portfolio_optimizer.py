@@ -5,6 +5,8 @@ from typing import Optional, Dict, List, Union
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from portfolio_optimizer_inputs import PortfolioOptimizerInputs
+
 
 class PortfolioOptimizer:
     """
@@ -47,7 +49,8 @@ class PortfolioOptimizer:
         gross_exposure: Optional[float] = None,
         objective: str = 'max_sharpe',
         risk_aversion: Optional[float] = 0.5,
-        simulated_returns: Optional[Dict[str, pd.DataFrame]] = None
+        simulated_returns: Optional[Dict[str, pd.DataFrame]] = None,
+        optimizer_inputs_instance: Optional[PortfolioOptimizerInputs] = None
     ):
         # Validate inputs
         if not isinstance(mu, pd.Series):
@@ -81,6 +84,7 @@ class PortfolioOptimizer:
         self.objective = objective
         self.risk_aversion = risk_aversion
         self.simulated_returns = simulated_returns
+        self.optimizer_inputs_instance = optimizer_inputs_instance
         
         # Constraints
         self.allow_short = allow_short
@@ -695,6 +699,7 @@ class PortfolioOptimizer:
         mu = results['inputs']['mu']
         Sigma = results['inputs']['Sigma']
         assets = results['instance'].asset_names
+        optimizer_inputs_instance = results['instance']
         raw_ohlc = {}
         for asset in assets:
             if asset in results['instance'].kmrf_models:
@@ -716,5 +721,6 @@ class PortfolioOptimizer:
             gross_exposure=gross_exposure,
             objective=objective,
             risk_aversion=risk_aversion,
-            simulated_returns=simulated_returns
+            simulated_returns=simulated_returns,
+            optimizer_inputs_instance=optimizer_inputs_instance
         )
