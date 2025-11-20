@@ -1659,12 +1659,27 @@ class PortfolioOptimizerInputs:
         
         # Convert numpy arrays to DataFrames for compatibility with downstream code
         for asset_name, returns_array in simulated_returns.items():
-            # returns_array has shape (n_simulations, n_days)
+            # returns_array has shape (n_simulations, n_days_actual)
+            # The actual n_days might differ from self.n_days if data was limited
+            n_simulations_actual, n_days_actual = returns_array.shape
+            
+            # Update self.n_days if the simulation used fewer days
+            if n_days_actual < self.n_days:
+                if not hasattr(self, '_n_days_auto_adjusted'):
+                    warnings.warn(
+                        f"Simulation produced {n_days_actual} days (requested {self.n_days}). "
+                        f"This may be due to limited forward data availability. "
+                        f"Adjusting n_days to {n_days_actual}.",
+                        UserWarning
+                    )
+                    self.n_days = n_days_actual
+                    self._n_days_auto_adjusted = True
+            
             # Convert to DataFrame: rows=days, columns=simulations
             self.asset_simulations[asset_name] = pd.DataFrame(
-                returns_array.T,  # Transpose to (n_days, n_simulations)
-                index=range(self.n_days),
-                columns=range(self.n_simulations)
+                returns_array.T,  # Transpose to (n_days_actual, n_simulations)
+                index=range(n_days_actual),
+                columns=range(n_simulations_actual)
             )
         
         if verbose:
