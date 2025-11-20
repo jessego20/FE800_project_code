@@ -1315,7 +1315,13 @@ class PortfolioOptimizerInputs:
         
         return regime_concordance
 
-    def load_models(self, asset_name: str, verbose: bool = False, kmrf: bool = False) -> Tuple[KAMA_MSR, KMRF]:
+    def load_models(
+        self, 
+        asset_name: str, 
+        verbose: bool = False, 
+        kmrf: bool = False,
+        asset_class_override: Optional[str] = None
+    ) -> Tuple[KAMA_MSR, KMRF]:
         """
         Load pre-fitted KAMA+MSR and KMRF models for an asset.
         If retrain_kmrf=True, trains a new KMRF model using data from KAMA_MSR.
@@ -1326,19 +1332,42 @@ class PortfolioOptimizerInputs:
             Asset name
         verbose : bool, default=False
             Print training progress if retraining KMRF
+        kmrf : bool, default=False
+            Whether to load/train KMRF model
+        asset_class_override : str, optional
+            Override the asset class for loading (useful for market asset)
             
         Returns
         -------
         tuple
             (kama_msr, kmrf) model instances
         """
-        kama_msr_path = self._get_kama_msr_path(asset_name)
+        # Use override if provided, otherwise use instance asset_class
+        asset_class_to_use = asset_class_override if asset_class_override is not None else self.asset_class
         
-        # Check if KAMA_MSR file exists
+        # Build path using the appropriate asset class
+        model_dir = self.models_base_path / 'KAMA_MSR' / asset_class_to_use / self.end_date
+        
+        # Try exact match first
+        exact_filename = f"{asset_name}_KAMA-MSR_4-regimes.pkl"
+        kama_msr_path = model_dir / exact_filename
+        
         if not kama_msr_path.exists():
-            raise FileNotFoundError(
-                f"KAMA+MSR model not found for {asset_name}: {kama_msr_path}"
-            )
+            # For universe asset class, use glob to find ticker-prefixed file
+            pattern = f"*{asset_name}_KAMA-MSR_4-regimes.pkl"
+            matching_files = list(model_dir.glob(pattern))
+            
+            if len(matching_files) == 1:
+                kama_msr_path = matching_files[0]
+            elif len(matching_files) > 1:
+                raise ValueError(
+                    f"Multiple KAMA+MSR model files found for {asset_name} in {asset_class_to_use}: "
+                    f"{[f.name for f in matching_files]}"
+                )
+            else:
+                raise FileNotFoundError(
+                    f"KAMA+MSR model not found for {asset_name} in asset class '{asset_class_to_use}': {model_dir}"
+                )
         
         # Load KAMA+MSR
         with open(kama_msr_path, 'rb') as f:
@@ -1355,13 +1384,29 @@ class PortfolioOptimizerInputs:
             
             kmrf = self._train_kmrf_from_kama_msr(kama_msr, asset_name, verbose=verbose)
         else:
-            # Load pre-trained KMRF
-            kmrf_path = self._get_kmrf_path(asset_name)
+            # Load pre-trained KMRF using asset_class_override if provided
+            kmrf_model_dir = self.models_base_path / 'KMRF_new' / 'original' / asset_class_to_use / self.end_date
+            
+            # Try exact match first
+            exact_filename = f"{asset_name}.pkl"
+            kmrf_path = kmrf_model_dir / exact_filename
             
             if not kmrf_path.exists():
-                raise FileNotFoundError(
-                    f"KMRF model not found for {asset_name}: {kmrf_path}"
-                )
+                # For universe asset class, use glob to find ticker-prefixed file
+                pattern = f"*{asset_name}.pkl"
+                matching_files = list(kmrf_model_dir.glob(pattern))
+                
+                if len(matching_files) == 1:
+                    kmrf_path = matching_files[0]
+                elif len(matching_files) > 1:
+                    raise ValueError(
+                        f"Multiple KMRF model files found for {asset_name} in {asset_class_to_use}: "
+                        f"{[f.name for f in matching_files]}"
+                    )
+                else:
+                    raise FileNotFoundError(
+                        f"KMRF model not found for {asset_name} in asset class '{asset_class_to_use}': {kmrf_model_dir}"
+                    )
             
             # Load KMRF (suppress output)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1632,10 +1677,51 @@ class PortfolioOptimizerInputs:
         regime_concordance = self.estimate_regime_concordance(verbose=verbose)
         
         # Step 4: Get market regime probabilities
+        # Load market asset if not already in portfolio
         if market_asset not in self.simulators:
-            raise ValueError(f"Market asset '{market_asset}' not in portfolio")
-        
-        market_regime_probs = self.simulators[market_asset].forward_probs
+            if verbose:
+                print(f"\n[Step 4/5] Market asset '{market_asset}' not in portfolio - loading separately...")
+            
+            try:
+                # Determine market asset class (typically us_equity for SPY)
+                market_asset_class = self.market_regime_asset_class
+                
+                # Load market asset models
+                kama_msr_market, kmrf_market = self.load_models(
+                    market_asset, 
+                    verbose=False, 
+                    kmrf=True,
+                    asset_class_override=market_asset_class
+                )
+                
+                # Create market simulator
+                market_simulator = BayesianForwardSimulator(
+                    kama_msr=kama_msr_market,
+                    kmrf=kmrf_market,
+                    n_days=self.n_days,
+                    alpha_confidence=self.alpha,
+                    significance_level=self.sig_level
+                )
+                
+                # Compute forward probabilities and fit distributions
+                market_simulator.compute_forward_regime_probs()
+                market_simulator.fit_regime_distributions(verbose=False)
+                
+                # Store market regime info for Bayesian updates
+                market_regime_probs = market_simulator.forward_probs
+                market_regime_distributions = market_simulator.regime_distributions
+                
+                if verbose:
+                    print(f"  ✓ Market asset loaded: {market_asset}")
+                    
+            except Exception as e:
+                raise ValueError(
+                    f"Could not load market asset '{market_asset}' from asset class '{market_asset_class}': {e}"
+                )
+        else:
+            # Market asset is in portfolio - use existing simulator
+            market_regime_probs = self.simulators[market_asset].forward_probs
+            market_regime_distributions = assets_regime_distributions[market_asset]
         
         if verbose:
             print(f"\n[Step 4/5] Using {market_asset} as market regime indicator")
@@ -1650,6 +1736,7 @@ class PortfolioOptimizerInputs:
             assets_regime_distributions=assets_regime_distributions,
             regime_correlations=regime_correlations,
             market_regime_probs=market_regime_probs,
+            market_regime_distributions=market_regime_distributions,
             regime_concordance=regime_concordance,
             market_asset=market_asset,
             n_simulations=self.n_simulations,

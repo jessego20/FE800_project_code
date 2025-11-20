@@ -1440,6 +1440,7 @@ class BayesianForwardSimulator:
         assets_regime_distributions: Dict[str, Dict[int, Dict]],
         regime_correlations: Dict[int, pd.DataFrame],
         market_regime_probs: pd.DataFrame,
+        market_regime_distributions: Dict[int, Dict],
         regime_concordance: Dict[str, pd.DataFrame],
         market_asset: str = 'SPDR S&P 500 ETF',
         n_simulations: int = 10000,
@@ -1497,6 +1498,11 @@ class BayesianForwardSimulator:
         market_regime_probs : pd.DataFrame
             Market asset's unconditional forward regime probabilities (n_days × 4)
         
+        market_regime_distributions : Dict[int, Dict]
+            Distribution parameters for market asset's regime-specific distributions
+            Format: {regime_id: {'distribution': str, 'params': dict}}
+            Used for Bayesian updates even when market asset not in portfolio
+        
         regime_concordance : Dict[str, pd.DataFrame]
             Conditional regime probabilities P(asset_regime | market_regime)
             Format: {asset: DataFrame where [i,j] = P(asset_regime=j | market_regime=i)}
@@ -1521,10 +1527,11 @@ class BayesianForwardSimulator:
         
         Notes
         -----
-        - Market asset must be in assets_forward_probs
+        - Market asset can be in portfolio or loaded separately
         - All assets must have same number of days
         - Regime concordance is required (not optional in corrected version)
         - Each simulation path has independent regime evolution with Bayesian updates
+        - Bayesian updates use market_regime_distributions even when market asset not in portfolio
         """
         np.random.seed(random_seed)
         
@@ -1532,7 +1539,10 @@ class BayesianForwardSimulator:
         asset_names = list(assets_forward_probs.keys())
         n_assets = len(asset_names)
         n_days = len(market_regime_probs)
-        market_asset_idx = asset_names.index(market_asset)
+        
+        # Check if market asset is in portfolio
+        market_asset_in_portfolio = market_asset in asset_names
+        market_asset_idx = asset_names.index(market_asset) if market_asset_in_portfolio else None
         
         # Validate
         for asset in asset_names:
@@ -1607,7 +1617,10 @@ class BayesianForwardSimulator:
                 # STEP 2: Sample asset regimes conditionally on market regime
                 # ================================================================
                 asset_regimes = np.zeros(n_assets, dtype=int)
-                asset_regimes[market_asset_idx] = market_regime
+                
+                # If market asset is in portfolio, set its regime
+                if market_asset_in_portfolio:
+                    asset_regimes[market_asset_idx] = market_regime
                 
                 for asset_idx, asset in enumerate(asset_names):
                     if asset != market_asset:
@@ -1654,14 +1667,24 @@ class BayesianForwardSimulator:
                 # STEP 4: Bayesian update for next day
                 # ================================================================
                 if day < n_days - 1:
-                    # Update market regime probabilities based on observed return
-                    market_return = returns[market_asset_idx]
+                    # Sample market return for Bayesian update
+                    # Use standard normal to get correlated uniform, then transform
+                    if market_asset_in_portfolio:
+                        # Market asset already sampled - use its return
+                        market_return = returns[market_asset_idx]
+                    else:
+                        # Market asset not in portfolio - sample separately for update
+                        # Use same market regime that was sampled
+                        market_return = BayesianForwardSimulator._inverse_cdf_copula(
+                            np.random.uniform(0, 1),  # Independent sample for market
+                            market_regime_distributions[market_regime]
+                        )
                     
                     # Compute likelihoods P(return | regime) for all regimes
                     likelihoods = np.array([
                         BayesianForwardSimulator._compute_likelihood(
                             market_return,
-                            dist_info[market_asset][regime_id]
+                            market_regime_distributions[regime_id]
                         )
                         for regime_id in range(4)
                     ])
