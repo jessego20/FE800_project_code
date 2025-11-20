@@ -89,7 +89,8 @@ class PortfolioOptimizerInputs:
         self.asset_class = asset_class
         self.end_date = end_date
         self.models_base_path = Path(models_base_path)
-        self.n_days = n_days
+        self.n_days_requested = n_days  # Store original request
+        self.n_days = n_days  # May be adjusted based on data availability
         self.n_simulations = n_simulations
         self.alpha = alpha_confidence
         self.sig_level = significance_level
@@ -116,6 +117,65 @@ class PortfolioOptimizerInputs:
         
         # Validate paths
         self._validate_setup()
+        
+        # Check data availability and adjust n_days if needed
+        self._check_data_availability()
+    
+    def _check_data_availability(self):
+        """
+        Check if sufficient forward data is available and adjust n_days if needed.
+        
+        This ensures the simulation horizon doesn't exceed available data,
+        which is important for backtesting near the end of the dataset.
+        """
+        try:
+            # Load master_df to check data availability
+            master_df_path = Path('data/master_df.csv')
+            if not master_df_path.exists():
+                # If master_df doesn't exist, skip check (assume data is available)
+                return
+            
+            # Load just the index to check dates
+            master_df = pd.read_csv(master_df_path, index_col=0, parse_dates=True, nrows=0)
+            
+            # Get all dates
+            all_dates_df = pd.read_csv(master_df_path, index_col=0, parse_dates=True, usecols=[0])
+            all_dates = all_dates_df.index
+            
+            # Find end_date position
+            end_ts = pd.Timestamp(self.end_date)
+            
+            if end_ts not in all_dates:
+                # End date not in data - find closest prior date
+                prior_dates = all_dates[all_dates <= end_ts]
+                if len(prior_dates) == 0:
+                    raise ValueError(f"No data available before end_date {self.end_date}")
+                end_ts = prior_dates[-1]
+            
+            # Count available forward days
+            future_dates = all_dates[all_dates > end_ts]
+            days_available = len(future_dates)
+            
+            if days_available < self.n_days_requested:
+                warnings.warn(
+                    f"Only {days_available} trading days available after {self.end_date} "
+                    f"(requested {self.n_days_requested}). Adjusting n_days to {days_available}.",
+                    UserWarning
+                )
+                self.n_days = days_available
+                
+        except Exception as e:
+            # If we can't check availability, proceed with requested n_days
+            warnings.warn(
+                f"Could not verify data availability: {e}. "
+                f"Proceeding with n_days={self.n_days_requested}",
+                UserWarning
+            )
+    
+    @property
+    def n_days_adjusted(self) -> bool:
+        """Return True if n_days was adjusted due to data availability."""
+        return self.n_days != self.n_days_requested
     
     def _validate_setup(self):
         """Validate that base paths exist."""
