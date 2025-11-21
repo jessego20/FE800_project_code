@@ -7,6 +7,8 @@ from pathlib import Path
 import warnings
 import contextlib
 import io
+from scipy import stats as scipy_stats
+from scipy.stats import norm, skewnorm, t, norminvgauss
 
 from bayesian_forward_simulator import BayesianForwardSimulator
 from kama_msr import KAMA_MSR
@@ -79,7 +81,7 @@ class PortfolioOptimizerInputs:
         alpha_confidence: float = 1.0,
         significance_level: float = 0.05,
         random_seed: int = 1010,
-        retrain_kmrf: bool = False,
+        retrain_kmrf: bool = True,
         use_boruta_selection: bool = False,
         use_consensus_selection: bool = False
     ):
@@ -87,7 +89,8 @@ class PortfolioOptimizerInputs:
         self.asset_class = asset_class
         self.end_date = end_date
         self.models_base_path = Path(models_base_path)
-        self.n_days = n_days
+        self.n_days_requested = n_days  # Store original request
+        self.n_days = n_days  # May be adjusted based on data availability
         self.n_simulations = n_simulations
         self.alpha = alpha_confidence
         self.sig_level = significance_level
@@ -96,16 +99,85 @@ class PortfolioOptimizerInputs:
         self.use_boruta_selection = use_boruta_selection
         self.use_consensus_selection = use_consensus_selection
         
+        # Phase 2: Market regime attributes
+        # Always use S&P 500 as market regime indicator
+        self.market_regime_asset = 'SPDR S&P 500 ETF'
+        self.market_regime_asset_class = 'us_equity'
+        self.market_regime_labels: Optional[pd.Series] = None
+        self.regime_correlations: Optional[Dict[int, pd.DataFrame]] = None
+        self.regime_concordance: Optional[Dict[str, np.ndarray]] = None  # P(asset_regime | market_regime)
+        
         # Storage for results
         self.asset_simulations: Dict[str, pd.DataFrame] = {}
         self.simulators: Dict[str, BayesianForwardSimulator] = {}
         self.kmrf_models: Dict[str, KMRF] = {}
+        self.simulated_market_regimes: Optional[np.ndarray] = None  # Shape: (n_simulations, n_days)
+        self.simulated_asset_regimes: Dict[str, np.ndarray] = {}  # Per-asset, shape: (n_simulations, n_days)
         self.mu: Optional[pd.Series] = None
         self.Sigma: Optional[pd.DataFrame] = None
         self.correlation_matrix: Optional[pd.DataFrame] = None
         
         # Validate paths
         self._validate_setup()
+        
+        # Check data availability and adjust n_days if needed
+        self._check_data_availability()
+    
+    def _check_data_availability(self):
+        """
+        Check if sufficient forward data is available and adjust n_days if needed.
+        
+        This ensures the simulation horizon doesn't exceed available data,
+        which is important for backtesting near the end of the dataset.
+        """
+        try:
+            # Load master_df to check data availability
+            master_df_path = Path('data/master_df.csv')
+            if not master_df_path.exists():
+                # If master_df doesn't exist, skip check (assume data is available)
+                return
+            
+            # Load just the index to check dates
+            master_df = pd.read_csv(master_df_path, index_col=0, parse_dates=True, nrows=0)
+            
+            # Get all dates
+            all_dates_df = pd.read_csv(master_df_path, index_col=0, parse_dates=True, usecols=[0])
+            all_dates = all_dates_df.index
+            
+            # Find end_date position
+            end_ts = pd.Timestamp(self.end_date)
+            
+            if end_ts not in all_dates:
+                # End date not in data - find closest prior date
+                prior_dates = all_dates[all_dates <= end_ts]
+                if len(prior_dates) == 0:
+                    raise ValueError(f"No data available before end_date {self.end_date}")
+                end_ts = prior_dates[-1]
+            
+            # Count available forward days
+            future_dates = all_dates[all_dates > end_ts]
+            days_available = len(future_dates)
+            
+            if days_available < self.n_days_requested:
+                warnings.warn(
+                    f"Only {days_available} trading days available after {self.end_date} "
+                    f"(requested {self.n_days_requested}). Adjusting n_days to {days_available}.",
+                    UserWarning
+                )
+                self.n_days = days_available
+                
+        except Exception as e:
+            # If we can't check availability, proceed with requested n_days
+            warnings.warn(
+                f"Could not verify data availability: {e}. "
+                f"Proceeding with n_days={self.n_days_requested}",
+                UserWarning
+            )
+    
+    @property
+    def n_days_adjusted(self) -> bool:
+        """Return True if n_days was adjusted due to data availability."""
+        return self.n_days != self.n_days_requested
     
     def _validate_setup(self):
         """Validate that base paths exist."""
@@ -131,8 +203,26 @@ class PortfolioOptimizerInputs:
     
     def _get_kama_msr_path(self, asset_name: str) -> Path:
         """Get path to KAMA+MSR model file."""
-        filename = f"{asset_name}_KAMA-MSR_4-regimes.pkl"
-        return self.models_base_path / 'KAMA_MSR' / self.asset_class / self.end_date / filename
+        # For universe asset class, files are named: "{ticker} - {asset_name}_KAMA-MSR_4-regimes.pkl"
+        # For other asset classes (us_equity, etc), files are: "{asset_name}_KAMA-MSR_4-regimes.pkl"
+        model_dir = self.models_base_path / 'KAMA_MSR' / self.asset_class / self.end_date
+        
+        # Try exact match first (for us_equity, us_treasury, etc.)
+        exact_filename = f"{asset_name}_KAMA-MSR_4-regimes.pkl"
+        exact_path = model_dir / exact_filename
+        if exact_path.exists():
+            return exact_path
+        
+        # For universe asset class, use glob to find ticker-prefixed file
+        pattern = f"*{asset_name}_KAMA-MSR_4-regimes.pkl"
+        matching_files = list(model_dir.glob(pattern))
+        
+        if len(matching_files) == 1:
+            return matching_files[0]
+        elif len(matching_files) > 1:
+            raise ValueError(f"Multiple KAMA+MSR model files found for {asset_name}: {[f.name for f in matching_files]}")
+        else:
+            raise FileNotFoundError(f"KAMA+MSR model not found for {asset_name} in {model_dir}")
     
     def _get_kmrf_path(self, asset_name: str) -> Path:
         """Get path to KMRF model file."""
@@ -140,8 +230,1403 @@ class PortfolioOptimizerInputs:
         # Keep asset name as-is, no space replacement
         filename = f"{asset_name}_KMRF_model.pkl"
         return self.models_base_path / 'KMRF_new' / 'original' / self.asset_class / filename
+    
+    # ========================================================================
+    # Phase 1: Copula Helper Functions
+    # ========================================================================
+    
+    def _inverse_cdf(self, u: float, dist_params: Dict) -> float:
+        """
+        Sample from distribution using inverse CDF (percent point function).
+        
+        Used in Gaussian copula to transform uniform samples to distribution-specific
+        samples while preserving correlation structure.
+        
+        Parameters
+        ----------
+        u : float
+            Uniform [0, 1] sample from copula
+        dist_params : dict
+            Distribution parameters from BayesianForwardSimulator
+            Must contain 'distribution' key and 'params' tuple
+            
+        Returns
+        -------
+        float
+            Sample from the specified distribution
+            
+        Raises
+        ------
+        ValueError
+            If u not in [0, 1], distribution type unknown, or parameters invalid
+            
+        Examples
+        --------
+        >>> dist_params = {'distribution': 'normal', 'params': (0.001, 0.02)}
+        >>> sample = self._inverse_cdf(0.5, dist_params)  # Returns median
+        """
+        # Validate input
+        if not (0 <= u <= 1):
+            raise ValueError(f"Uniform sample u must be in [0, 1], got {u}")
+        
+        dist_type = dist_params.get('distribution')
+        params = dist_params.get('params')
+        
+        if dist_type is None or params is None:
+            raise ValueError(f"dist_params must contain 'distribution' and 'params' keys")
+        
+        # Handle edge cases to avoid numerical issues
+        u_clipped = np.clip(u, 1e-10, 1 - 1e-10)
+        
+        try:
+            if dist_type == 'normal':
+                loc, scale = params
+                return norm.ppf(u_clipped, loc=loc, scale=scale)
+            
+            elif dist_type == 'skewnorm':
+                a, loc, scale = params
+                return skewnorm.ppf(u_clipped, a, loc=loc, scale=scale)
+            
+            elif dist_type == 'student_t':
+                df, loc, scale = params
+                return t.ppf(u_clipped, df, loc=loc, scale=scale)
+            
+            elif dist_type == 'norminvgauss':
+                a, b, loc, scale = params
+                return norminvgauss.ppf(u_clipped, a, b, loc=loc, scale=scale)
+            
+            elif dist_type == 'empirical':
+                # For empirical distributions, use quantile function
+                # params should contain the return data
+                if isinstance(params, tuple) and len(params) > 0:
+                    returns = params[0]
+                    return np.quantile(returns, u_clipped)
+                else:
+                    raise ValueError(f"Empirical distribution params must contain return data")
+            
+            else:
+                raise ValueError(f"Unknown distribution type: {dist_type}")
+                
+        except Exception as e:
+            raise ValueError(
+                f"Failed to compute inverse CDF for {dist_type} with u={u}: {str(e)}"
+            )
+    
+    def _validate_correlation_matrix(self, corr: pd.DataFrame) -> Tuple[bool, List[str]]:
+        """
+        Validate that a matrix is a valid correlation matrix.
+        
+        Checks:
+        1. Matrix is square
+        2. Matrix is symmetric
+        3. Diagonal elements are all 1.0
+        4. All elements in [-1, 1]
+        5. Matrix is positive semi-definite
+        
+        Parameters
+        ----------
+        corr : pd.DataFrame
+            Correlation matrix to validate
+            
+        Returns
+        -------
+        tuple
+            (is_valid, list_of_issues)
+            is_valid: bool indicating if matrix is valid
+            list_of_issues: list of strings describing any issues found
+            
+        Examples
+        --------
+        >>> valid, issues = self._validate_correlation_matrix(corr_matrix)
+        >>> if not valid:
+        ...     print(f"Correlation matrix issues: {issues}")
+        """
+        issues = []
+        
+        # Check if square
+        if corr.shape[0] != corr.shape[1]:
+            issues.append(f"Matrix not square: shape {corr.shape}")
+            return False, issues
+        
+        # Check symmetry
+        if not np.allclose(corr.values, corr.values.T, atol=1e-8):
+            max_diff = np.abs(corr.values - corr.values.T).max()
+            issues.append(f"Matrix not symmetric: max difference = {max_diff:.2e}")
+        
+        # Check diagonal is all 1s
+        diag_vals = np.diag(corr.values)
+        if not np.allclose(diag_vals, 1.0, atol=1e-6):
+            non_one = diag_vals[~np.isclose(diag_vals, 1.0)]
+            issues.append(f"Diagonal not all 1.0: found values {non_one}")
+        
+        # Check all values in [-1, 1]
+        if (corr.values < -1).any() or (corr.values > 1).any():
+            min_val, max_val = corr.values.min(), corr.values.max()
+            issues.append(f"Values outside [-1, 1]: range [{min_val:.4f}, {max_val:.4f}]")
+        
+        # Check positive semi-definite (all eigenvalues >= 0)
+        try:
+            eigenvalues = np.linalg.eigvalsh(corr.values)
+            min_eigenval = eigenvalues.min()
+            
+            if min_eigenval < -1e-8:  # Allow small numerical errors
+                issues.append(
+                    f"Matrix not positive semi-definite: "
+                    f"minimum eigenvalue = {min_eigenval:.2e}"
+                )
+        except np.linalg.LinAlgError as e:
+            issues.append(f"Could not compute eigenvalues: {str(e)}")
+        
+        is_valid = len(issues) == 0
+        return is_valid, issues
+    
+    def _make_positive_definite(
+        self, 
+        corr: pd.DataFrame, 
+        method: str = 'eigenvalue'
+    ) -> pd.DataFrame:
+        """
+        Convert a correlation matrix to the nearest positive definite matrix.
+        
+        Parameters
+        ----------
+        corr : pd.DataFrame
+            Correlation matrix that may not be positive definite
+        method : str, default='eigenvalue'
+            Method to use:
+            - 'eigenvalue': Clip negative eigenvalues to small positive value
+            - 'nearest': Find nearest positive definite matrix (Higham's algorithm)
+            
+        Returns
+        -------
+        pd.DataFrame
+            Positive definite correlation matrix with same index/columns
+            
+        Warnings
+        --------
+        Prints warning if matrix was modified
+        
+        Examples
+        --------
+        >>> corr_fixed = self._make_positive_definite(corr_matrix)
+        """
+        # Check if already valid
+        is_valid, issues = self._validate_correlation_matrix(corr)
+        
+        if is_valid:
+            return corr.copy()
+        
+        # Warn user
+        warnings.warn(
+            f"Correlation matrix is not positive definite. "
+            f"Issues: {'; '.join(issues)}. "
+            f"Applying {method} correction."
+        )
+        
+        if method == 'eigenvalue':
+            # Eigenvalue clipping method
+            eigenvals, eigenvecs = np.linalg.eigh(corr.values)
+            
+            # Clip negative eigenvalues
+            min_eigenval = 1e-8
+            eigenvals_clipped = np.maximum(eigenvals, min_eigenval)
+            
+            # Reconstruct matrix
+            corr_fixed = eigenvecs @ np.diag(eigenvals_clipped) @ eigenvecs.T
+            
+            # Ensure diagonal is exactly 1
+            scaling = np.sqrt(np.diag(corr_fixed))
+            corr_fixed = corr_fixed / scaling[:, None] / scaling[None, :]
+            
+        elif method == 'nearest':
+            # Higham's algorithm for nearest correlation matrix
+            corr_fixed = self._nearest_correlation_matrix(corr.values)
+            
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'eigenvalue' or 'nearest'")
+        
+        # Convert back to DataFrame
+        result = pd.DataFrame(
+            corr_fixed,
+            index=corr.index,
+            columns=corr.columns
+        )
+        
+        # Validate result
+        is_valid_result, _ = self._validate_correlation_matrix(result)
+        if not is_valid_result:
+            warnings.warn(
+                f"Correction method '{method}' did not produce valid correlation matrix. "
+                "Using identity matrix as fallback."
+            )
+            result = pd.DataFrame(
+                np.eye(len(corr)),
+                index=corr.index,
+                columns=corr.columns
+            )
+        
+        return result
+    
+    def _nearest_correlation_matrix(self, A: np.ndarray, max_iter: int = 100) -> np.ndarray:
+        """
+        Find the nearest correlation matrix using Higham's algorithm.
+        
+        Reference: Higham, N. J. (2002). Computing the nearest correlation matrix—
+        a problem from finance. IMA Journal of Numerical Analysis, 22(3), 329-343.
+        
+        Parameters
+        ----------
+        A : np.ndarray
+            Input matrix (may not be positive definite)
+        max_iter : int, default=100
+            Maximum iterations
+            
+        Returns
+        -------
+        np.ndarray
+            Nearest positive semi-definite correlation matrix
+        """
+        n = A.shape[0]
+        
+        # Initialize
+        Y = A.copy()
+        Delta_S = np.zeros_like(A)
+        
+        for _ in range(max_iter):
+            # Project onto positive semi-definite matrices
+            R = Y - Delta_S
+            eigenvals, eigenvecs = np.linalg.eigh(R)
+            eigenvals = np.maximum(eigenvals, 0)
+            X = eigenvecs @ np.diag(eigenvals) @ eigenvecs.T
+            
+            Delta_S = X - R
+            
+            # Project onto correlation matrices (diagonal = 1)
+            Y = X.copy()
+            np.fill_diagonal(Y, 1)
+            
+            # Check convergence
+            if np.linalg.norm(Y - X) < 1e-8:
+                break
+        
+        return Y
+    
+    # ========================================================================
+    # Phase 2: Market Regime Correlation Estimation
+    # ========================================================================
+    
+    def _load_market_regime_labels(self, verbose: bool = True) -> pd.Series:
+        """
+        Load S&P 500 regime labels to define market state.
+        
+        Always uses 'SPDR S&P 500 ETF' from 'us_equity' asset class,
+        regardless of the portfolio's asset class. This ensures a consistent
+        market regime definition across all portfolios.
+        
+        Parameters
+        ----------
+        verbose : bool, default=True
+            Print diagnostic information
+            
+        Returns
+        -------
+        pd.Series
+            S&P 500 regime labels (0, 1, 2, 3) indexed by date
+            
+        Raises
+        ------
+        FileNotFoundError
+            If S&P 500 KAMA_MSR model doesn't exist for end_date
+            
+        Notes
+        -----
+        Market regimes defined by S&P 500:
+        - Regime 0: Low Volatility Bull
+        - Regime 1: Low Volatility Bear
+        - Regime 2: High Volatility Bull
+        - Regime 3: High Volatility Bear
+        """
+        if verbose:
+            print(f"\nLoading market regime labels from {self.market_regime_asset}...")
+            if self.asset_class != self.market_regime_asset_class:
+                print(f"  Note: Portfolio asset class is '{self.asset_class}', "
+                      f"but using '{self.market_regime_asset_class}' S&P 500 for market regimes")
+        
+        # Get S&P 500 KAMA_MSR path
+        market_kama_msr_path = self._get_kama_msr_path_for_asset(
+            self.market_regime_asset,
+            self.market_regime_asset_class
+        )
+        
+        if not market_kama_msr_path.exists():
+            raise FileNotFoundError(
+                f"S&P 500 KAMA_MSR model not found for market regime definition: "
+                f"{market_kama_msr_path}\n"
+                f"Market regimes require S&P 500 model at end_date={self.end_date}"
+            )
+        
+        # Load KAMA_MSR model
+        with open(market_kama_msr_path, 'rb') as f:
+            market_kama_msr = pickle.load(f)
+        
+        regime_labels = market_kama_msr.regime_labels
+        
+        if verbose:
+            print(f"  Loaded {len(regime_labels)} regime labels")
+            print(f"  Date range: {regime_labels.index[0]} to {regime_labels.index[-1]}")
+            
+            # Check for NA values
+            n_na = regime_labels.isna().sum()
+            if n_na > 0:
+                print(f"  Warning: {n_na} NA values in regime labels ({n_na/len(regime_labels)*100:.1f}%)")
+            
+            print(f"  Regime distribution:")
+            # Filter out NA values before getting unique regimes
+            valid_regimes = regime_labels.dropna().unique()
+            for regime in sorted(valid_regimes):
+                count = (regime_labels == regime).sum()
+                pct = (count / len(regime_labels)) * 100
+                regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+                print(f"    Regime {regime} ({regime_names.get(regime, 'Unknown')}): "
+                      f"{count:>5} days ({pct:>5.1f}%)")
+        
+        self.market_regime_labels = regime_labels
+        return regime_labels
+    
+    def _get_kama_msr_path_for_asset(
+        self, 
+        asset_name: str, 
+        asset_class: str
+    ) -> Path:
+        """
+        Get path to KAMA+MSR model file for a specific asset and class.
+        
+        Parameters
+        ----------
+        asset_name : str
+            Asset name
+        asset_class : str
+            Asset class ('us_equity', 'universe', etc.)
+            
+        Returns
+        -------
+        Path
+            Path to KAMA_MSR model file
+        """
+        # For universe asset class, files are named: "{ticker} - {asset_name}_KAMA-MSR_4-regimes.pkl"
+        # For other asset classes (us_equity, etc), files are: "{asset_name}_KAMA-MSR_4-regimes.pkl"
+        model_dir = self.models_base_path / 'KAMA_MSR' / asset_class / self.end_date
+        
+        # Try exact match first (for us_equity, us_treasury, etc.)
+        exact_filename = f"{asset_name}_KAMA-MSR_4-regimes.pkl"
+        exact_path = model_dir / exact_filename
+        if exact_path.exists():
+            return exact_path
+        
+        # For universe asset class, use glob to find ticker-prefixed file
+        pattern = f"*{asset_name}_KAMA-MSR_4-regimes.pkl"
+        matching_files = list(model_dir.glob(pattern))
+        
+        if len(matching_files) == 1:
+            return matching_files[0]
+        elif len(matching_files) > 1:
+            raise ValueError(f"Multiple KAMA+MSR model files found for {asset_name}: {[f.name for f in matching_files]}")
+        else:
+            raise FileNotFoundError(f"KAMA+MSR model not found for {asset_name} in {model_dir}")
+    
+    def estimate_regime_correlations(
+        self,
+        verbose: bool = True,
+        min_observations: int = 30
+    ) -> Dict[int, pd.DataFrame]:
+        """
+        Estimate correlation matrices for each market regime.
+        
+        Uses S&P 500 regime labels to define market state, then computes
+        correlation matrices for portfolio assets during each regime.
+        
+        Parameters
+        ----------
+        verbose : bool, default=True
+            Print diagnostic information
+        min_observations : int, default=30
+            Minimum observations required per regime. If a regime has fewer
+            observations, uses overall correlation as fallback.
+            
+        Returns
+        -------
+        Dict[int, pd.DataFrame]
+            {regime_id: correlation_matrix} for regimes 0, 1, 2, 3
+            
+        Raises
+        ------
+        ValueError
+            If market regime labels not loaded or insufficient data
+            
+        Examples
+        --------
+        >>> regime_corrs = portfolio_gen.estimate_regime_correlations()
+        >>> # Access correlation matrix for HV Bear regime
+        >>> hv_bear_corr = regime_corrs[3]
+        
+        Notes
+        -----
+        - All correlations are conditional on S&P 500 regime state
+        - Works across different asset classes
+        - Invalid correlation matrices are automatically corrected
+        """
+        if verbose:
+            print(f"\n{'='*80}")
+            print("ESTIMATING REGIME-DEPENDENT CORRELATION MATRICES")
+            print(f"{'='*80}")
+        
+        # Load market regime labels if not already loaded
+        if self.market_regime_labels is None:
+            self._load_market_regime_labels(verbose=verbose)
+        
+        market_regime_labels = self.market_regime_labels
+        
+        if verbose:
+            print(f"\nPortfolio assets: {self.asset_names}")
+            print(f"Market regime defined by: {self.market_regime_asset}")
+        
+        # Load returns for all portfolio assets
+        asset_returns_dict = {}
+        
+        for asset_name in self.asset_names:
+            if verbose:
+                print(f"\nLoading returns for {asset_name}...")
+            
+            kama_msr, _ = self.load_models(asset_name, verbose=False, kmrf=False)
+            asset_returns_dict[asset_name] = kama_msr.returns
+            
+            if verbose:
+                print(f"  Returns: {len(kama_msr.returns)} observations")
+                print(f"  Date range: {kama_msr.returns.index[0]} to {kama_msr.returns.index[-1]}")
+        
+        # Create DataFrame of all asset returns
+        returns_df = pd.DataFrame(asset_returns_dict)
+        
+        # Align with market regime labels
+        common_dates = returns_df.index.intersection(market_regime_labels.index)
+        
+        if len(common_dates) == 0:
+            raise ValueError(
+                "No overlapping dates between portfolio asset returns and "
+                "S&P 500 regime labels. Check data alignment."
+            )
+        
+        aligned_returns = returns_df.loc[common_dates]
+        aligned_regimes = market_regime_labels.loc[common_dates]
+        
+        # Remove rows where regime is NA
+        valid_mask = aligned_regimes.notna()
+        aligned_returns = aligned_returns[valid_mask]
+        aligned_regimes = aligned_regimes[valid_mask]
+        
+        if verbose:
+            print(f"\nAligned data: {len(aligned_returns)} observations (after removing NA regimes)")
+            print(f"Date range: {aligned_returns.index[0]} to {aligned_returns.index[-1]}")
+        
+        # Estimate correlation for each regime
+        regime_correlations = {}
+        regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+        
+        # Also compute overall correlation as fallback
+        overall_corr = aligned_returns.corr()
+        
+        if verbose:
+            print(f"\n{'─'*80}")
+            print("REGIME-SPECIFIC CORRELATIONS")
+            print(f"{'─'*80}")
+        
+        # Now all regimes should be valid (no NA)
+        for regime in sorted(aligned_regimes.unique()):
+            regime_mask = (aligned_regimes == regime)
+            regime_data = aligned_returns[regime_mask]
+            n_obs = len(regime_data)
+            
+            if verbose:
+                print(f"\nRegime {regime} ({regime_names.get(regime, 'Unknown')}):")
+                print(f"  Observations: {n_obs}")
+            
+            if n_obs < min_observations:
+                if verbose:
+                    print(f"  ⚠️  WARNING: Only {n_obs} observations (< {min_observations} required)")
+                    print(f"  Using overall correlation as fallback")
+                regime_correlations[regime] = overall_corr.copy()
+            else:
+                regime_corr = regime_data.corr()
+                
+                # Validate and correct if needed
+                is_valid, issues = self._validate_correlation_matrix(regime_corr)
+                
+                if not is_valid:
+                    if verbose:
+                        print(f"  ⚠️  Correlation matrix invalid: {issues}")
+                        print(f"  Applying correction...")
+                    regime_corr = self._make_positive_definite(regime_corr)
+                    is_valid_after, _ = self._validate_correlation_matrix(regime_corr)
+                    if verbose and is_valid_after:
+                        print(f"  ✓ Correction successful")
+                
+                regime_correlations[regime] = regime_corr
+                
+                if verbose:
+                    print(f"  Correlation matrix ({regime_corr.shape[0]}x{regime_corr.shape[1]}):")
+                    # Show average off-diagonal correlation
+                    mask = ~np.eye(regime_corr.shape[0], dtype=bool)
+                    avg_corr = regime_corr.values[mask].mean()
+                    min_corr = regime_corr.values[mask].min()
+                    max_corr = regime_corr.values[mask].max()
+                    print(f"    Avg correlation: {avg_corr:.3f}")
+                    print(f"    Range: [{min_corr:.3f}, {max_corr:.3f}]")
+        
+        # Fill in any missing regimes with overall correlation
+        for regime in [0, 1, 2, 3]:
+            if regime not in regime_correlations:
+                if verbose:
+                    print(f"\n⚠️  Regime {regime} not found in data, using overall correlation")
+                regime_correlations[regime] = overall_corr.copy()
+        
+        if verbose:
+            print(f"\n{'='*80}")
+            print("✓ Regime correlation estimation complete")
+            print(f"{'='*80}")
+        
+        self.regime_correlations = regime_correlations
+        return regime_correlations
+    
+    def validate_regime_correlations(
+        self,
+        min_correlation: float = -1.0,
+        max_correlation: float = 1.0,
+        check_positive_definite: bool = True,
+        verbose: bool = True
+    ) -> Dict[int, Dict]:
+        """
+        Validate estimated regime correlation matrices.
+        
+        Checks:
+        - Correlation bounds (-1 to 1)
+        - Symmetry
+        - Positive definiteness
+        - Eigenvalue distribution
+        - Condition number
+        
+        Parameters
+        ----------
+        min_correlation : float, default=-1.0
+            Minimum allowed correlation
+        max_correlation : float, default=1.0
+            Maximum allowed correlation
+        check_positive_definite : bool, default=True
+            Check if matrices are positive definite
+        verbose : bool, default=True
+            Print validation results
+            
+        Returns
+        -------
+        Dict[int, Dict]
+            Validation results for each regime
+        """
+        if self.regime_correlations is None:
+            raise ValueError("Must call estimate_regime_correlations() first")
+        
+        results = {}
+        regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+        
+        for regime_id, corr_matrix in self.regime_correlations.items():
+            corr_array = corr_matrix.values
+            n = corr_array.shape[0]
+            
+            # Check 1: Bounds
+            min_val = corr_array.min()
+            max_val = corr_array.max()
+            bounds_ok = (min_val >= min_correlation) and (max_val <= max_correlation)
+            
+            # Check 2: Symmetry
+            symmetry_error = np.max(np.abs(corr_array - corr_array.T))
+            is_symmetric = symmetry_error < 1e-10
+            
+            # Check 3: Diagonal is 1
+            diag_error = np.max(np.abs(np.diag(corr_array) - 1.0))
+            diag_ok = diag_error < 1e-10
+            
+            # Check 4: Positive definite
+            eigenvals = np.linalg.eigvalsh(corr_array)
+            min_eigenval = eigenvals.min()
+            is_positive_definite = min_eigenval > -1e-10
+            
+            # Check 5: Condition number
+            max_eigenval = eigenvals.max()
+            condition_number = max_eigenval / max(abs(min_eigenval), 1e-10)
+            is_well_conditioned = condition_number < 100
+            
+            # Check 6: Average correlation
+            # Extract upper triangle (excluding diagonal)
+            upper_tri_idx = np.triu_indices(n, k=1)
+            correlations = corr_array[upper_tri_idx]
+            avg_correlation = correlations.mean()
+            max_correlation_val = correlations.max()
+            min_correlation_val = correlations.min()
+            
+            # Overall validation
+            all_checks_pass = (
+                bounds_ok and 
+                is_symmetric and 
+                diag_ok and 
+                is_positive_definite and
+                is_well_conditioned
+            )
+            
+            results[regime_id] = {
+                'regime_name': regime_names[regime_id],
+                'valid': all_checks_pass,
+                'bounds_ok': bounds_ok,
+                'is_symmetric': is_symmetric,
+                'diagonal_ok': diag_ok,
+                'is_positive_definite': is_positive_definite,
+                'is_well_conditioned': is_well_conditioned,
+                'min_eigenval': min_eigenval,
+                'max_eigenval': max_eigenval,
+                'condition_number': condition_number,
+                'avg_correlation': avg_correlation,
+                'min_correlation': min_correlation_val,
+                'max_correlation': max_correlation_val,
+                'symmetry_error': symmetry_error,
+                'diagonal_error': diag_error
+            }
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("REGIME CORRELATION MATRIX VALIDATION")
+            print("="*80)
+            
+            for regime_id, res in results.items():
+                print(f"\nRegime {regime_id} ({res['regime_name']}):")
+                print(f"  Valid: {'✓' if res['valid'] else '✗'}")
+                print(f"  Positive Definite: {'✓' if res['is_positive_definite'] else '✗'}")
+                print(f"  Well-Conditioned: {'✓' if res['is_well_conditioned'] else '✗'}")
+                print(f"  Eigenvalues: [{res['min_eigenval']:.6f}, {res['max_eigenval']:.6f}]")
+                print(f"  Condition Number: {res['condition_number']:.2f}")
+                print(f"  Avg Correlation: {res['avg_correlation']:.3f}")
+                print(f"  Correlation Range: [{res['min_correlation']:.3f}, {res['max_correlation']:.3f}]")
+                
+                if not res['valid']:
+                    print("  ⚠️  Issues detected:")
+                    if not res['is_positive_definite']:
+                        print(f"    - Not positive definite (min eigenval: {res['min_eigenval']:.6f})")
+                    if not res['is_well_conditioned']:
+                        print(f"    - Poorly conditioned (condition number: {res['condition_number']:.2f})")
+            
+            # Summary
+            n_valid = sum(1 for r in results.values() if r['valid'])
+            print("\n" + "-"*80)
+            print(f"Summary: {n_valid}/{len(results)} regimes have valid correlation matrices")
+            
+            if n_valid == len(results):
+                print("✓ All correlation matrices passed validation")
+            else:
+                print("⚠️  Some correlation matrices have issues (will be corrected automatically)")
+            
+            print("="*80)
+        
+        return results
+    
+    def validate_regime_concordance(
+        self,
+        min_probability: float = 0.0,
+        max_probability: float = 1.0,
+        check_row_sums: bool = True,
+        verbose: bool = True
+    ) -> Dict[str, Dict]:
+        """
+        Validate estimated regime concordance matrices.
+        
+        Checks:
+        - Probability bounds [0, 1]
+        - Row sums to 1 (stochastic matrix)
+        - No NaN or Inf values
+        - Diagonal dominance (assets follow market regime)
+        
+        Parameters
+        ----------
+        min_probability : float, default=0.0
+            Minimum probability
+        max_probability : float, default=1.0
+            Maximum probability
+        check_row_sums : bool, default=True
+            Check if rows sum to 1
+        verbose : bool, default=True
+            Print validation results
+            
+        Returns
+        -------
+        Dict[str, Dict]
+            Validation results for each asset
+        """
+        if self.regime_concordance is None:
+            raise ValueError("Must call estimate_regime_concordance() first")
+        
+        results = {}
+        
+        for asset, concordance_df in self.regime_concordance.items():
+            concordance_array = concordance_df.values
+            
+            # Check 1: Bounds [0, 1]
+            min_val = concordance_array.min()
+            max_val = concordance_array.max()
+            bounds_ok = (min_val >= min_probability) and (max_val <= max_probability)
+            
+            # Check 2: No NaN or Inf
+            has_nan = np.isnan(concordance_array).any()
+            has_inf = np.isinf(concordance_array).any()
+            is_finite = not (has_nan or has_inf)
+            
+            # Check 3: Row sums to 1 (stochastic matrix)
+            row_sums = concordance_array.sum(axis=1)
+            row_sum_error = np.max(np.abs(row_sums - 1.0))
+            rows_sum_to_one = row_sum_error < 1e-6
+            
+            # Check 4: Diagonal dominance (asset follows market regime)
+            diagonal = np.diag(concordance_array)
+            avg_diagonal = diagonal.mean()
+            min_diagonal = diagonal.min()
+            max_off_diagonal = concordance_array[~np.eye(4, dtype=bool)].max()
+            is_diagonal_dominant = avg_diagonal > 0.25  # On average, >25% concordance
+            
+            # Overall validation
+            all_checks_pass = (
+                bounds_ok and
+                is_finite and
+                rows_sum_to_one and
+                is_diagonal_dominant
+            )
+            
+            results[asset] = {
+                'valid': all_checks_pass,
+                'bounds_ok': bounds_ok,
+                'is_finite': is_finite,
+                'rows_sum_to_one': rows_sum_to_one,
+                'is_diagonal_dominant': is_diagonal_dominant,
+                'avg_diagonal': avg_diagonal,
+                'min_diagonal': min_diagonal,
+                'max_off_diagonal': max_off_diagonal,
+                'row_sum_error': row_sum_error,
+                'min_probability': min_val,
+                'max_probability': max_val
+            }
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("REGIME CONCORDANCE VALIDATION")
+            print("="*80)
+            
+            for asset, res in results.items():
+                print(f"\n{asset}:")
+                print(f"  Valid: {'✓' if res['valid'] else '✗'}")
+                print(f"  Stochastic (rows sum to 1): {'✓' if res['rows_sum_to_one'] else '✗'}")
+                print(f"  Diagonal Dominant: {'✓' if res['is_diagonal_dominant'] else '✗'}")
+                print(f"  Avg Diagonal: {res['avg_diagonal']:.3f}")
+                print(f"  Min Diagonal: {res['min_diagonal']:.3f}")
+                print(f"  Max Off-Diagonal: {res['max_off_diagonal']:.3f}")
+                
+                if not res['valid']:
+                    print("  ⚠️  Issues:")
+                    if not res['rows_sum_to_one']:
+                        print(f"    - Rows don't sum to 1 (max error: {res['row_sum_error']:.6f})")
+                    if not res['is_diagonal_dominant']:
+                        print(f"    - Weak concordance (avg diagonal: {res['avg_diagonal']:.3f})")
+            
+            # Summary
+            n_valid = sum(1 for r in results.values() if r['valid'])
+            print("\n" + "-"*80)
+            print(f"Summary: {n_valid}/{len(results)} assets have valid concordance matrices")
+            
+            if n_valid == len(results):
+                print("✓ All concordance matrices passed validation")
+            else:
+                print("⚠️  Some concordance matrices have issues")
+            
+            print("="*80)
+        
+        return results
+    
+    def diagnostic_summary(self, verbose: bool = True) -> Dict:
+        """
+        Comprehensive diagnostic summary of all estimations.
+        
+        Runs all validation methods and provides overview.
+        
+        Parameters
+        ----------
+        verbose : bool, default=True
+            Print summary
+            
+        Returns
+        -------
+        dict
+            Complete diagnostic results
+        """
+        diagnostics = {}
+        
+        # Validate regime correlations
+        if self.regime_correlations is not None:
+            diagnostics['correlations'] = self.validate_regime_correlations(verbose=verbose)
+        
+        # Validate regime concordance
+        if self.regime_concordance is not None:
+            diagnostics['concordance'] = self.validate_regime_concordance(verbose=verbose)
+        
+        # Validate individual asset distributions
+        if self.simulators:
+            diagnostics['distributions'] = {}
+            for asset_name, simulator in self.simulators.items():
+                if simulator.regime_distributions is not None:
+                    if verbose:
+                        print(f"\n{'='*80}")
+                        print(f"DISTRIBUTION VALIDATION: {asset_name}")
+                        print(f"{'='*80}")
+                    diagnostics['distributions'][asset_name] = simulator.validate_distributions(verbose=verbose)
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("DIAGNOSTIC SUMMARY COMPLETE")
+            print("="*80)
+        
+        return diagnostics
+    
+    def validate_copula_simulation(
+        self,
+        market_asset: str = 'SPDR S&P 500 ETF',
+        regime_tolerance: float = 0.15,
+        correlation_tolerance: float = 0.20,
+        min_regime_samples: int = 50,
+        verbose: bool = True
+    ) -> Dict:
+        """
+        Validate copula simulation results against expected properties.
+        
+        This method checks that the simulated returns from the copula preserve:
+        1. Regime-dependent correlations (within each market regime)
+        2. Regime concordance (asset regimes align with market regime)
+        3. Overall correlation structure
+        
+        Uses the ACTUAL regime assignments from the copula simulation (not inferred).
+        Validates across ALL simulations for statistically robust results.
+        
+        Parameters
+        ----------
+        market_asset : str, default='SPDR S&P 500 ETF'
+            Market asset used for regime identification (for reporting only)
+        regime_tolerance : float, default=0.15
+            Acceptable deviation from expected regime correlations (e.g., 0.15 = ±15%)
+        correlation_tolerance : float, default=0.20
+            Acceptable deviation from expected overall correlations
+        min_regime_samples : int, default=50
+            Minimum (simulation, day) pairs needed per regime for validation
+        verbose : bool, default=True
+            Print validation results
+            
+        Returns
+        -------
+        dict
+            Validation results with keys:
+            - 'regime_correlations': Per-regime correlation comparison
+            - 'regime_concordance': Concordance validation
+            - 'overall_correlations': Overall correlation comparison
+            - 'summary': Overall validation summary
+            
+        Notes
+        -----
+        This should be called after simulate_all_assets(use_copula=True).
+        Requires that regime_correlations and regime_concordance have been estimated.
+        """
+        # Check prerequisites
+        if not self.asset_simulations:
+            raise ValueError("Must call simulate_all_assets() first")
+        
+        if self.regime_correlations is None:
+            raise ValueError("Must call estimate_regime_correlations() first")
+        
+        if self.regime_concordance is None:
+            raise ValueError("Must call estimate_regime_concordance() first")
+        
+        if self.simulated_market_regimes is None:
+            raise ValueError("Regime information not available - simulation may not have used copula method")
+        
+        results = {
+            'regime_correlations': {},
+            'regime_concordance': {},
+            'overall_correlations': {},
+            'summary': {}
+        }
+        
+        regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("COPULA SIMULATION VALIDATION")
+            print("="*80)
+            print(f"Using actual regime assignments from {self.n_simulations:,} simulations")
+            print(f"Validation across ALL simulations (not just one path)")
+        
+        # =====================================================================
+        # STEP 1: Validate regime-dependent correlations
+        # =====================================================================
+        if verbose:
+            print(f"\nStep 1: Validating regime-dependent correlations...")
+            print(f"  Minimum samples per regime: {min_regime_samples}")
+        
+        for regime_id in range(4):
+            # Find all (simulation, day) pairs where market was in this regime
+            regime_mask = self.simulated_market_regimes == regime_id
+            n_samples = regime_mask.sum()
+            
+            if n_samples < min_regime_samples:
+                if verbose:
+                    print(f"  ⚠️  Regime {regime_id} ({regime_names[regime_id]}): "
+                          f"Insufficient samples ({n_samples} < {min_regime_samples})")
+                continue
+            
+            # Extract returns for this regime across all assets
+            regime_returns_dict = {}
+            for asset_name in self.asset_names:
+                asset_sim = self.asset_simulations[asset_name].values.T  # Shape: (n_sim, n_days)
+                # Flatten and extract only regime days
+                regime_returns = asset_sim[regime_mask]
+                regime_returns_dict[asset_name] = regime_returns
+            
+            # Compute empirical correlation from all regime samples
+            regime_returns_df = pd.DataFrame(regime_returns_dict)
+            empirical_corr = regime_returns_df.corr()
+            
+            # Compare with expected correlation
+            expected_corr = self.regime_correlations[regime_id]
+            
+            # Compute differences (exclude diagonal)
+            corr_diff = np.abs(empirical_corr.values - expected_corr.values)
+            n = len(self.asset_names)
+            off_diag_mask = ~np.eye(n, dtype=bool)
+            mean_diff = corr_diff[off_diag_mask].mean()
+            max_diff = corr_diff[off_diag_mask].max()
+            
+            # Check if within tolerance
+            is_valid = mean_diff < regime_tolerance
+            
+            results['regime_correlations'][regime_id] = {
+                'regime_name': regime_names[regime_id],
+                'n_samples': n_samples,
+                'mean_absolute_diff': mean_diff,
+                'max_absolute_diff': max_diff,
+                'is_valid': is_valid,
+                'empirical_corr': empirical_corr,
+                'expected_corr': expected_corr
+            }
+            
+            if verbose:
+                status = "✓" if is_valid else "⚠️"
+                print(f"  {status} Regime {regime_id} ({regime_names[regime_id]}): "
+                      f"Mean diff = {mean_diff:.3f}, Max diff = {max_diff:.3f}, "
+                      f"n = {n_samples:,}")
+        
+        # =====================================================================
+        # STEP 2: Validate regime concordance
+        # =====================================================================
+        if verbose:
+            print(f"\nStep 2: Validating regime concordance...")
+        
+        for asset_name in self.asset_names:
+            if asset_name not in self.simulated_asset_regimes:
+                continue
+            
+            # Get simulated asset regimes
+            asset_regimes = self.simulated_asset_regimes[asset_name]  # (n_sim, n_days)
+            market_regimes = self.simulated_market_regimes  # (n_sim, n_days)
+            
+            # Compute empirical concordance matrix
+            empirical_concordance = np.zeros((4, 4))
+            for market_regime in range(4):
+                market_mask = market_regimes == market_regime
+                n_market = market_mask.sum()
+                
+                if n_market > 0:
+                    for asset_regime in range(4):
+                        # Count (market_regime, asset_regime) pairs
+                        both_mask = market_mask & (asset_regimes == asset_regime)
+                        empirical_concordance[market_regime, asset_regime] = both_mask.sum() / n_market
+            
+            # Compare with expected concordance
+            expected_concordance = self.regime_concordance[asset_name]
+            
+            # Compute differences
+            concordance_diff = np.abs(empirical_concordance - expected_concordance)
+            mean_diff = concordance_diff.mean()
+            max_diff = concordance_diff.max()
+            
+            # Check diagonal concordance (should be stronger)
+            empirical_diag = np.diag(empirical_concordance).mean()
+            expected_diag = np.diag(expected_concordance).mean()
+            
+            is_valid = mean_diff < regime_tolerance
+            
+            results['regime_concordance'][asset_name] = {
+                'mean_absolute_diff': mean_diff,
+                'max_absolute_diff': max_diff,
+                'empirical_avg_diagonal': empirical_diag,
+                'expected_avg_diagonal': expected_diag,
+                'is_valid': is_valid,
+                'empirical_concordance': empirical_concordance,
+                'expected_concordance': expected_concordance
+            }
+            
+            if verbose:
+                status = "✓" if is_valid else "⚠️"
+                print(f"  {status} {asset_name}: Mean diff = {mean_diff:.3f}, "
+                      f"Empirical diag = {empirical_diag:.3f}, Expected diag = {expected_diag:.3f}")
+        
+        # =====================================================================
+        # STEP 3: Validate overall correlations
+        # =====================================================================
+        if verbose:
+            print(f"\nStep 3: Validating overall correlation structure...")
+        
+        # Compute empirical correlations across ALL simulations and days
+        all_returns = {}
+        for asset_name in self.asset_names:
+            # Flatten: (n_sim * n_days) vector
+            all_returns[asset_name] = self.asset_simulations[asset_name].values.T.flatten()
+        
+        empirical_overall_corr = pd.DataFrame(all_returns).corr()
+        
+        # Expected overall correlation (weighted average across regimes)
+        regime_frequencies = {}
+        for regime_id in range(4):
+            regime_frequencies[regime_id] = (self.simulated_market_regimes == regime_id).mean()
+        
+        expected_overall_corr = np.zeros((len(self.asset_names), len(self.asset_names)))
+        for regime_id, freq in regime_frequencies.items():
+            if regime_id in self.regime_correlations:
+                expected_overall_corr += freq * self.regime_correlations[regime_id].values
+        
+        expected_overall_corr_df = pd.DataFrame(
+            expected_overall_corr,
+            index=self.asset_names,
+            columns=self.asset_names
+        )
+        
+        # Compute differences
+        overall_corr_diff = np.abs(empirical_overall_corr.values - expected_overall_corr)
+        n = len(self.asset_names)
+        off_diag_mask = ~np.eye(n, dtype=bool)
+        mean_overall_diff = overall_corr_diff[off_diag_mask].mean()
+        max_overall_diff = overall_corr_diff[off_diag_mask].max()
+        
+        is_overall_valid = mean_overall_diff < correlation_tolerance
+        
+        results['overall_correlations'] = {
+            'mean_absolute_diff': mean_overall_diff,
+            'max_absolute_diff': max_overall_diff,
+            'is_valid': is_overall_valid,
+            'empirical_corr': empirical_overall_corr,
+            'expected_corr': expected_overall_corr_df,
+            'regime_frequencies': regime_frequencies
+        }
+        
+        if verbose:
+            status = "✓" if is_overall_valid else "⚠️"
+            print(f"  {status} Overall Correlations: Mean diff = {mean_overall_diff:.3f}, "
+                  f"Max diff = {max_overall_diff:.3f}")
+            print(f"\n  Regime Frequencies in Simulations:")
+            for regime_id, freq in regime_frequencies.items():
+                print(f"    {regime_names[regime_id]}: {freq:.1%}")
+        
+        # =====================================================================
+        # STEP 4: Summary
+        # =====================================================================
+        n_valid_regimes = sum(1 for r in results['regime_correlations'].values() if r['is_valid'])
+        n_total_regimes = len(results['regime_correlations'])
+        
+        n_valid_concordance = sum(1 for r in results['regime_concordance'].values() if r['is_valid'])
+        n_total_concordance = len(results['regime_concordance'])
+        
+        all_valid = (
+            (n_valid_regimes == n_total_regimes if n_total_regimes > 0 else True) and
+            (n_valid_concordance == n_total_concordance if n_total_concordance > 0 else True) and
+            is_overall_valid
+        )
+        
+        results['summary'] = {
+            'all_valid': all_valid,
+            'n_valid_regime_correlations': n_valid_regimes,
+            'n_total_regime_correlations': n_total_regimes,
+            'n_valid_concordance': n_valid_concordance,
+            'n_total_concordance': n_total_concordance,
+            'overall_correlation_valid': is_overall_valid,
+            'mean_regime_correlation_diff': np.mean([
+                r['mean_absolute_diff'] for r in results['regime_correlations'].values()
+            ]) if results['regime_correlations'] else np.nan,
+            'mean_concordance_diff': np.mean([
+                r['mean_absolute_diff'] for r in results['regime_concordance'].values()
+            ]) if results['regime_concordance'] else np.nan,
+            'mean_overall_correlation_diff': mean_overall_diff
+        }
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("VALIDATION SUMMARY")
+            print("="*80)
+            print(f"Regime Correlations: {n_valid_regimes}/{n_total_regimes} valid")
+            print(f"Regime Concordance: {n_valid_concordance}/{n_total_concordance} valid")
+            print(f"Overall Correlations: {'Valid ✓' if is_overall_valid else 'Invalid ⚠️'}")
+            print(f"\nOverall Assessment: {'PASS ✓' if all_valid else 'FAIL ⚠️'}")
+            
+            if not all_valid:
+                print("\nIssues detected:")
+                if n_valid_regimes < n_total_regimes:
+                    print(f"  - {n_total_regimes - n_valid_regimes} regime(s) have correlation mismatches")
+                if n_valid_concordance < n_total_concordance:
+                    print(f"  - {n_total_concordance - n_valid_concordance} asset(s) have concordance mismatches")
+                if not is_overall_valid:
+                    print(f"  - Overall correlation structure deviates by {mean_overall_diff:.1%}")
+            else:
+                print("\n✓ Copula simulation successfully preserves:")
+                print("  - Regime-dependent correlation structure")
+                print("  - Regime concordance patterns")
+                print("  - Overall correlation structure")
+            
+            print("="*80)
+        
+        return results
+    
+    def plot_regime_correlations(
+        self,
+        figsize: Tuple[int, int] = (16, 12),
+        cmap: str = 'RdBu_r',
+        save_path: Optional[str] = None
+    ):
+        """
+        Plot correlation matrices for all four regimes.
+        
+        Parameters
+        ----------
+        figsize : tuple, default=(16, 12)
+            Figure size (width, height)
+        cmap : str, default='RdBu_r'
+            Colormap name (diverging colormaps recommended)
+        save_path : str, optional
+            Path to save figure. If None, displays interactively.
+            
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The generated figure
+            
+        Raises
+        ------
+        ValueError
+            If regime correlations have not been estimated
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        if self.regime_correlations is None:
+            raise ValueError(
+                "Regime correlations not estimated. "
+                "Call estimate_regime_correlations() first."
+            )
+        
+        regime_names = {
+            0: 'Regime 0: Low Vol Bull',
+            1: 'Regime 1: Low Vol Bear',
+            2: 'Regime 2: High Vol Bull',
+            3: 'Regime 3: High Vol Bear'
+        }
+        
+        fig, axes = plt.subplots(2, 2, figsize=figsize)
+        axes = axes.flatten()
+        
+        for regime in [0, 1, 2, 3]:
+            ax = axes[regime]
+            corr = self.regime_correlations[regime]
+            
+            # Plot heatmap
+            sns.heatmap(
+                corr,
+                ax=ax,
+                cmap=cmap,
+                vmin=-1,
+                vmax=1,
+                center=0,
+                annot=True,
+                fmt='.2f',
+                square=True,
+                cbar_kws={'shrink': 0.8},
+                linewidths=0.5,
+                linecolor='gray'
+            )
+            
+            ax.set_title(
+                regime_names[regime],
+                fontsize=12,
+                fontweight='bold',
+                pad=10
+            )
+            
+            # Rotate labels
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+        
+        plt.suptitle(
+            f'Correlation Matrices Conditional on S&P 500 Regime\n'
+            f'Portfolio: {len(self.asset_names)} assets | End Date: {self.end_date}',
+            fontsize=14,
+            fontweight='bold',
+            y=0.995
+        )
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+        
+        return fig
+    
+    def estimate_regime_concordance(
+        self,
+        verbose: bool = True,
+        min_observations: int = 30
+    ) -> Dict[str, np.ndarray]:
+        """
+        Estimate conditional regime probabilities: P(asset_regime | market_regime).
+        
+        This measures how each asset's regime depends on the S&P 500 market regime.
+        Instead of assuming independent regime transitions, we model:
+        P(IWM in regime j | SPY in regime i) for all i, j combinations.
+        
+        Parameters
+        ----------
+        verbose : bool, default=True
+            Print diagnostic information
+        min_observations : int, default=30
+            Minimum observations in market regime to estimate conditional probs
+            
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            For each asset, a 4x4 matrix where entry [i,j] = P(asset_regime=j | market_regime=i)
+            Stored in self.regime_concordance
+            
+        Examples
+        --------
+        >>> concordance = portfolio_gen.estimate_regime_concordance()
+        >>> # For IWM, what's the probability it's in regime 2 given SPY is in regime 0?
+        >>> prob = concordance['iShares Russell 2000 ETF'][0, 2]
+        
+        Notes
+        -----
+        This is critical for realistic multi-asset simulation. Without this, we assume
+        all assets can be in any regime independently of market conditions, which is
+        unrealistic (e.g., small caps rarely in "Bull" regime during market "Bear").
+        """
+        if self.market_regime_labels is None:
+            self._load_market_regime_labels(verbose=False)
+        
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"ESTIMATING REGIME CONCORDANCE WITH MARKET")
+            print(f"{'='*80}\n")
+            print(f"Market regime indicator: {self.market_regime_asset}")
+            print(f"Portfolio assets: {len(self.asset_names)}")
+        
+        # Storage for conditional probabilities
+        regime_concordance = {}
+        
+        # Get market regime labels
+        market_regimes = self.market_regime_labels
+        
+        for asset_name in self.asset_names:
+            if verbose:
+                print(f"\nAnalyzing {asset_name}...")
+            
+            # Load asset's KAMA_MSR model to get its regime labels
+            try:
+                kama_msr_path = self._get_kama_msr_path_for_asset(
+                    asset_name, 
+                    self.asset_class
+                )
+                
+                with open(kama_msr_path, 'rb') as f:
+                    asset_kama_msr = pickle.load(f)
+                
+                asset_regimes = asset_kama_msr.regime_labels
+                
+                # Align dates
+                aligned = pd.DataFrame({
+                    'market_regime': market_regimes,
+                    'asset_regime': asset_regimes
+                }).dropna()
+                
+                if verbose:
+                    print(f"  Aligned observations: {len(aligned)}")
+                
+                # Estimate P(asset_regime | market_regime) for all combinations
+                concordance_matrix = np.zeros((4, 4))  # [market_regime, asset_regime]
+                
+                for market_regime in range(4):
+                    # Get observations where market was in this regime
+                    mask = aligned['market_regime'] == market_regime
+                    n_obs = mask.sum()
+                    
+                    if n_obs < min_observations:
+                        if verbose:
+                            print(f"  Warning: Market regime {market_regime} has only {n_obs} obs "
+                                  f"(< {min_observations}), using uniform distribution")
+                        concordance_matrix[market_regime, :] = 0.25  # Uniform fallback
+                    else:
+                        # Count asset regime occurrences conditional on market regime
+                        asset_regime_counts = aligned.loc[mask, 'asset_regime'].value_counts()
+                        
+                        # Convert to probabilities
+                        for asset_regime in range(4):
+                            count = asset_regime_counts.get(asset_regime, 0)
+                            concordance_matrix[market_regime, asset_regime] = count / n_obs
+                        
+                        if verbose:
+                            regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+                            print(f"  Market regime {market_regime} ({regime_names[market_regime]}): {n_obs} obs")
+                            for asset_regime in range(4):
+                                prob = concordance_matrix[market_regime, asset_regime]
+                                if prob > 0.01:  # Only show non-trivial probabilities
+                                    print(f"    → Asset regime {asset_regime}: {prob:.3f}")
+                
+                regime_concordance[asset_name] = concordance_matrix
+                
+            except FileNotFoundError as e:
+                if verbose:
+                    print(f"  ⚠️  Could not load model: {e}")
+                    print(f"  Using uniform concordance (independent regimes)")
+                # Fallback: uniform distribution (independence)
+                regime_concordance[asset_name] = np.full((4, 4), 0.25)
+        
+        self.regime_concordance = regime_concordance
+        
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"✓ Regime concordance estimation complete")
+            print(f"{'='*80}")
+        
+        return regime_concordance
 
-    def load_models(self, asset_name: str, verbose: bool = False, kmrf: bool = False) -> Tuple[KAMA_MSR, KMRF]:
+    def load_models(
+        self, 
+        asset_name: str, 
+        verbose: bool = False, 
+        kmrf: bool = False,
+        asset_class_override: Optional[str] = None
+    ) -> Tuple[KAMA_MSR, KMRF]:
         """
         Load pre-fitted KAMA+MSR and KMRF models for an asset.
         If retrain_kmrf=True, trains a new KMRF model using data from KAMA_MSR.
@@ -152,19 +1637,42 @@ class PortfolioOptimizerInputs:
             Asset name
         verbose : bool, default=False
             Print training progress if retraining KMRF
+        kmrf : bool, default=False
+            Whether to load/train KMRF model
+        asset_class_override : str, optional
+            Override the asset class for loading (useful for market asset)
             
         Returns
         -------
         tuple
             (kama_msr, kmrf) model instances
         """
-        kama_msr_path = self._get_kama_msr_path(asset_name)
+        # Use override if provided, otherwise use instance asset_class
+        asset_class_to_use = asset_class_override if asset_class_override is not None else self.asset_class
         
-        # Check if KAMA_MSR file exists
+        # Build path using the appropriate asset class
+        model_dir = self.models_base_path / 'KAMA_MSR' / asset_class_to_use / self.end_date
+        
+        # Try exact match first
+        exact_filename = f"{asset_name}_KAMA-MSR_4-regimes.pkl"
+        kama_msr_path = model_dir / exact_filename
+        
         if not kama_msr_path.exists():
-            raise FileNotFoundError(
-                f"KAMA+MSR model not found for {asset_name}: {kama_msr_path}"
-            )
+            # For universe asset class, use glob to find ticker-prefixed file
+            pattern = f"*{asset_name}_KAMA-MSR_4-regimes.pkl"
+            matching_files = list(model_dir.glob(pattern))
+            
+            if len(matching_files) == 1:
+                kama_msr_path = matching_files[0]
+            elif len(matching_files) > 1:
+                raise ValueError(
+                    f"Multiple KAMA+MSR model files found for {asset_name} in {asset_class_to_use}: "
+                    f"{[f.name for f in matching_files]}"
+                )
+            else:
+                raise FileNotFoundError(
+                    f"KAMA+MSR model not found for {asset_name} in asset class '{asset_class_to_use}': {model_dir}"
+                )
         
         # Load KAMA+MSR
         with open(kama_msr_path, 'rb') as f:
@@ -181,13 +1689,36 @@ class PortfolioOptimizerInputs:
             
             kmrf = self._train_kmrf_from_kama_msr(kama_msr, asset_name, verbose=verbose)
         else:
-            # Load pre-trained KMRF
-            kmrf_path = self._get_kmrf_path(asset_name)
+            # Load pre-trained KMRF using asset_class_override if provided
+            # KMRF models are stored at asset class level (no date folder) to avoid data leakage
+            kmrf_model_dir = self.models_base_path / 'KMRF_new' / 'original' / asset_class_to_use
+            
+            # Try multiple filename patterns
+            # Pattern 1: Exact match (e.g., "Energy Select Sector SPDR.pkl")
+            exact_filename = f"{asset_name}.pkl"
+            kmrf_path = kmrf_model_dir / exact_filename
             
             if not kmrf_path.exists():
-                raise FileNotFoundError(
-                    f"KMRF model not found for {asset_name}: {kmrf_path}"
-                )
+                # Pattern 2: With suffix (e.g., "Energy Select Sector SPDR_KMRF_model.pkl")
+                suffix_filename = f"{asset_name}_KMRF_model.pkl"
+                kmrf_path = kmrf_model_dir / suffix_filename
+                
+                if not kmrf_path.exists():
+                    # Pattern 3: Use glob to find any file containing the asset name
+                    pattern = f"{asset_name}*.pkl"
+                    matching_files = list(kmrf_model_dir.glob(pattern))
+                    
+                    if len(matching_files) == 1:
+                        kmrf_path = matching_files[0]
+                    elif len(matching_files) > 1:
+                        raise ValueError(
+                            f"Multiple KMRF model files found for {asset_name} in {asset_class_to_use}: "
+                            f"{[f.name for f in matching_files]}"
+                        )
+                    else:
+                        raise FileNotFoundError(
+                            f"KMRF model not found for {asset_name} in asset class '{asset_class_to_use}': {kmrf_model_dir}"
+                        )
             
             # Load KMRF (suppress output)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -219,10 +1750,11 @@ class PortfolioOptimizerInputs:
         KMRF
             Trained KMRF model
         """
-        # Initialize KMRF with feature selection options
+        # Initialize KMRF with feature selection options and pre-loaded KAMA_MSR model
         kmrf = KMRF(
             asset_name=asset_name,
             asset_class=self.asset_class,
+            kama_msr_model=kama_msr,  # Pass the loaded model
             end_date=self.end_date,
             random_seed=self.random_seed,
             classification_type='original',  # Use 4-regime labels from KAMA_MSR
@@ -317,19 +1849,46 @@ class PortfolioOptimizerInputs:
         
         return simulated_returns
     
-    def simulate_all_assets(self, verbose: bool = True) -> Dict[str, pd.DataFrame]:
+    def simulate_all_assets(
+        self,
+        verbose: bool = True,
+        use_copula: bool = True,
+        market_asset: str = 'SPDR S&P 500 ETF'
+    ) -> Dict[str, pd.DataFrame]:
         """
         Run Bayesian forward simulations for all assets.
+        
+        Phase 4 Update: Now uses multi-asset Gaussian copula simulation by default,
+        which preserves regime-dependent correlations and regime concordance.
         
         Parameters
         ----------
         verbose : bool, default=True
             Print progress information
+        use_copula : bool, default=True
+            If True, uses Gaussian copula for multi-asset simulation (recommended)
+            If False, uses legacy independent simulation (correlations not preserved)
+        market_asset : str, default='SPDR S&P 500 ETF'
+            Asset to use as market regime indicator for copula simulation
             
         Returns
         -------
         dict
-            {asset_name: simulated_returns} for all assets
+            {asset_name: simulated_returns} where values are numpy arrays
+            of shape (n_simulations, n_days)
+            
+        Notes
+        -----
+        The copula method (use_copula=True) is superior because it:
+        - Preserves regime-dependent correlation structure
+        - Captures regime concordance (assets co-move with market)
+        - Uses Bayesian updates for realistic regime evolution
+        - Is faster (one simulation vs. N independent simulations)
+        
+        Legacy independent method (use_copula=False) is retained for:
+        - Backward compatibility
+        - Single-asset analysis
+        - Debugging/comparison purposes
         """
         if verbose:
             print(f"\n{'='*80}")
@@ -338,7 +1897,290 @@ class PortfolioOptimizerInputs:
             print(f"Asset Class: {self.asset_class}")
             print(f"End Date: {self.end_date}")
             print(f"Horizon: {self.n_days} days")
-            print(f"Simulations per asset: {self.n_simulations:,}")
+            print(f"Simulations: {self.n_simulations:,}")
+            print(f"Method: {'Gaussian Copula (correlated)' if use_copula else 'Independent (legacy)'}")
+        
+        if use_copula:
+            # Phase 3 implementation: Multi-asset copula simulation
+            self._simulate_all_assets_copula(verbose=verbose, market_asset=market_asset)
+        else:
+            # Legacy implementation: Independent per-asset simulation
+            self._simulate_all_assets_independent(verbose=verbose)
+        
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"✓ Successfully simulated {len(self.asset_simulations)}/{len(self.asset_names)} assets")
+            print(f"{'='*80}")
+        
+        return self.asset_simulations
+    
+    def _simulate_all_assets_copula(
+        self,
+        verbose: bool = True,
+        market_asset: str = 'SPDR S&P 500 ETF'
+    ) -> None:
+        """
+        Run multi-asset simulation using Gaussian copula with regime concordance.
+        
+        This is the Phase 3 implementation that preserves correlations and
+        regime dependencies across assets.
+        
+        Parameters
+        ----------
+        verbose : bool
+            Print progress information
+        market_asset : str
+            Asset to use as market regime indicator
+        """
+        if verbose:
+            print(f"\n{'='*80}")
+            print("MULTI-ASSET COPULA SIMULATION")
+            print(f"{'='*80}")
+            print(f"Phase 3: Gaussian Copula with Bayesian Updates")
+        
+        # Step 1: Initialize simulators for all assets (needed for forward probs and distributions)
+        if verbose:
+            print(f"\n[Step 1/5] Initializing simulators for {len(self.asset_names)} assets...")
+        
+        assets_forward_probs = {}
+        assets_regime_distributions = {}
+        
+        for i, asset_name in enumerate(self.asset_names, 1):
+            if verbose:
+                print(f"  [{i}/{len(self.asset_names)}] Loading {asset_name}...")
+            
+            try:
+                # Load models
+                kama_msr, kmrf = self.load_models(asset_name, verbose=False, kmrf=True)
+                self.kmrf_models[asset_name] = kmrf
+                
+                # Create simulator (but don't run simulation)
+                simulator = BayesianForwardSimulator(
+                    kama_msr=kama_msr,
+                    kmrf=kmrf,
+                    n_days=self.n_days,
+                    alpha_confidence=self.alpha,
+                    significance_level=self.sig_level
+                )
+                
+                # Compute forward probabilities and fit distributions
+                simulator.compute_forward_regime_probs()
+                simulator.fit_regime_distributions(verbose=False)
+                
+                # Store
+                self.simulators[asset_name] = simulator
+                assets_forward_probs[asset_name] = simulator.forward_probs
+                assets_regime_distributions[asset_name] = simulator.regime_distributions
+                
+            except Exception as e:
+                print(f"\n⚠️  ERROR loading {asset_name}: {e}")
+                raise
+        
+        # Step 2: Estimate regime-dependent correlations
+        if verbose:
+            print(f"\n[Step 2/5] Estimating regime-dependent correlations...")
+        
+        regime_correlations = self.estimate_regime_correlations(verbose=verbose)
+        
+        # Step 3: Estimate regime concordance
+        if verbose:
+            print(f"\n[Step 3/5] Estimating regime concordance...")
+        
+        regime_concordance = self.estimate_regime_concordance(verbose=verbose)
+        
+        # Step 4: Get market regime probabilities
+        # Load market asset if not already in portfolio
+        if market_asset not in self.simulators:
+            if verbose:
+                print(f"\n[Step 4/5] Market asset '{market_asset}' not in portfolio...")
+            
+            # For universe asset class, always use IVV (with full name)
+            if self.asset_class == 'universe':
+                ivv_full_name = 'IVV - iShares Core S&P 500 ETF'
+                
+                # Check if IVV is in portfolio
+                if ivv_full_name in self.simulators:
+                    if verbose:
+                        print(f"  Using {ivv_full_name} from portfolio as market asset")
+                    
+                    market_regime_probs = self.simulators[ivv_full_name].forward_probs
+                    market_regime_distributions = assets_regime_distributions[ivv_full_name]
+                    market_asset = ivv_full_name
+                else:
+                    # Load IVV separately
+                    try:
+                        if verbose:
+                            print(f"  Loading {ivv_full_name} as market asset...")
+                        
+                        kama_msr_market, kmrf_market = self.load_models(
+                            ivv_full_name,
+                            verbose=False,
+                            kmrf=True,
+                            asset_class_override='universe'
+                        )
+                        
+                        # Create market simulator
+                        market_simulator = BayesianForwardSimulator(
+                            kama_msr=kama_msr_market,
+                            kmrf=kmrf_market,
+                            n_days=self.n_days,
+                            alpha_confidence=self.alpha,
+                            significance_level=self.sig_level
+                        )
+                        
+                        # Compute forward probabilities and fit distributions
+                        market_simulator.compute_forward_regime_probs()
+                        market_simulator.fit_regime_distributions(verbose=False)
+                        
+                        # Store market regime info for Bayesian updates
+                        market_regime_probs = market_simulator.forward_probs
+                        market_regime_distributions = market_simulator.regime_distributions
+                        market_asset = ivv_full_name
+                        
+                        if verbose:
+                            print(f"  ✓ Market asset loaded: {ivv_full_name}")
+                    
+                    except Exception as e:
+                        if verbose:
+                            print(f"  ⚠️  Could not load IVV, using first portfolio asset as fallback")
+                        
+                        market_asset_proxy = self.asset_names[0]
+                        market_regime_probs = self.simulators[market_asset_proxy].forward_probs
+                        market_regime_distributions = assets_regime_distributions[market_asset_proxy]
+                        market_asset = market_asset_proxy
+            
+            elif self.asset_class == 'us_equity':
+                # For us_equity asset class, try to load SPY separately
+                try:
+                    if verbose:
+                        print(f"  Loading market asset separately...")
+                    
+                    # Determine market asset class (typically us_equity for SPY)
+                    market_asset_class = self.market_regime_asset_class
+                    
+                    # Load market asset models
+                    kama_msr_market, kmrf_market = self.load_models(
+                        market_asset, 
+                        verbose=False, 
+                        kmrf=True,
+                        asset_class_override=market_asset_class
+                    )
+                    
+                    # Create market simulator
+                    market_simulator = BayesianForwardSimulator(
+                        kama_msr=kama_msr_market,
+                        kmrf=kmrf_market,
+                        n_days=self.n_days,
+                        alpha_confidence=self.alpha,
+                        significance_level=self.sig_level
+                    )
+                    
+                    # Compute forward probabilities and fit distributions
+                    market_simulator.compute_forward_regime_probs()
+                    market_simulator.fit_regime_distributions(verbose=False)
+                    
+                    # Store market regime info for Bayesian updates
+                    market_regime_probs = market_simulator.forward_probs
+                    market_regime_distributions = market_simulator.regime_distributions
+                    
+                    if verbose:
+                        print(f"  ✓ Market asset loaded: {market_asset}")
+                        
+                except Exception as e:
+                    # Fallback to using first portfolio asset
+                    market_asset_proxy = self.asset_names[0]
+                    if verbose:
+                        print(f"  ⚠️  Could not load SPY, using '{market_asset_proxy}' as market proxy")
+                    
+                    market_regime_probs = self.simulators[market_asset_proxy].forward_probs
+                    market_regime_distributions = assets_regime_distributions[market_asset_proxy]
+                    market_asset = market_asset_proxy
+            
+            else:
+                # For other asset classes (commodity, int_equity, etc.), use first portfolio asset
+                market_asset_proxy = self.asset_names[0]
+                if verbose:
+                    print(f"  Using portfolio asset '{market_asset_proxy}' as market proxy")
+                
+                market_regime_probs = self.simulators[market_asset_proxy].forward_probs
+                market_regime_distributions = assets_regime_distributions[market_asset_proxy]
+                market_asset = market_asset_proxy
+        else:
+            # Market asset is in portfolio - use existing simulator
+            market_regime_probs = self.simulators[market_asset].forward_probs
+            market_regime_distributions = assets_regime_distributions[market_asset]
+        
+        if verbose:
+            print(f"\n[Step 4/5] Using {market_asset} as market regime indicator")
+            print(f"  Market regime probabilities shape: {market_regime_probs.shape}")
+        
+        # Step 5: Run multi-asset copula simulation
+        if verbose:
+            print(f"\n[Step 5/5] Running Gaussian copula simulation...")
+        
+        simulation_results = BayesianForwardSimulator.simulate_multiasset_copula(
+            assets_forward_probs=assets_forward_probs,
+            assets_regime_distributions=assets_regime_distributions,
+            regime_correlations=regime_correlations,
+            market_regime_probs=market_regime_probs,
+            market_regime_distributions=market_regime_distributions,
+            regime_concordance=regime_concordance,
+            market_asset=market_asset,
+            n_simulations=self.n_simulations,
+            random_seed=self.random_seed,
+            verbose=verbose
+        )
+        
+        # Unpack results
+        simulated_returns = simulation_results['returns']
+        self.simulated_market_regimes = simulation_results['market_regimes']
+        self.simulated_asset_regimes = simulation_results['asset_regimes']
+        
+        # Convert numpy arrays to DataFrames for compatibility with downstream code
+        for asset_name, returns_array in simulated_returns.items():
+            # returns_array has shape (n_simulations, n_days_actual)
+            # The actual n_days might differ from self.n_days if data was limited
+            n_simulations_actual, n_days_actual = returns_array.shape
+            
+            # Update self.n_days if the simulation used fewer days
+            if n_days_actual < self.n_days:
+                if not hasattr(self, '_n_days_auto_adjusted'):
+                    warnings.warn(
+                        f"Simulation produced {n_days_actual} days (requested {self.n_days}). "
+                        f"This may be due to limited forward data availability. "
+                        f"Adjusting n_days to {n_days_actual}.",
+                        UserWarning
+                    )
+                    self.n_days = n_days_actual
+                    self._n_days_auto_adjusted = True
+            
+            # Convert to DataFrame: rows=days, columns=simulations
+            self.asset_simulations[asset_name] = pd.DataFrame(
+                returns_array.T,  # Transpose to (n_days_actual, n_simulations)
+                index=range(n_days_actual),
+                columns=range(n_simulations_actual)
+            )
+        
+        if verbose:
+            print(f"\n✓ Copula simulation complete")
+            print(f"  Output format: DataFrames with shape ({self.n_days} days, {self.n_simulations} simulations)")
+    
+    def _simulate_all_assets_independent(self, verbose: bool = True) -> None:
+        """
+        Legacy method: Run independent simulations for each asset.
+        
+        WARNING: This method does NOT preserve correlations between assets.
+        Use simulate_all_assets(use_copula=True) instead for proper multi-asset simulation.
+        
+        This method is retained for:
+        - Backward compatibility
+        - Single-asset analysis
+        - Debugging purposes
+        """
+        if verbose:
+            print(f"\n⚠️  WARNING: Using legacy independent simulation")
+            print(f"   Correlations between assets will NOT be preserved")
+            print(f"   Consider using use_copula=True for proper multi-asset simulation\n")
         
         for i, asset_name in enumerate(self.asset_names, 1):
             if verbose:
@@ -350,13 +2192,6 @@ class PortfolioOptimizerInputs:
                 print(f"\n⚠️  ERROR simulating {asset_name}: {e}")
                 print(f"Skipping {asset_name}...")
                 continue
-        
-        if verbose:
-            print(f"\n{'='*80}")
-            print(f"✓ Successfully simulated {len(self.asset_simulations)}/{len(self.asset_names)} assets")
-            print(f"{'='*80}")
-        
-        return self.asset_simulations
     
     def compute_portfolio_inputs(
         self, 
@@ -814,3 +2649,4 @@ class PortfolioOptimizerInputs:
             'summary': portfolio_gen.summary(),
             'asset_simulations': portfolio_gen.asset_simulations  # Add for Sortino ratio
         }
+

@@ -15,9 +15,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 from scipy import stats as scipy_stats
-from scipy.stats import skewnorm, t, norminvgauss
+from scipy.stats import skewnorm, t, norminvgauss, norm
 from scipy.optimize import minimize, curve_fit
 import warnings
 import contextlib
@@ -477,69 +477,148 @@ class BayesianForwardSimulator:
         self.regime_distributions = distributions
         return distributions
     
-    def validate_distributions(self) -> pd.DataFrame:
+    def validate_distributions(self, verbose: bool = True) -> pd.DataFrame:
         """
-        Validate and summarize fitted distribution parameters.
+        Validate fitted distributions with goodness-of-fit tests.
+        
+        Performs:
+        - Parameter validity checks
+        - Kolmogorov-Smirnov test
+        - Anderson-Darling test
+        - Chi-square test
+        - Q-Q plot correlation
+        
+        Parameters
+        ----------
+        verbose : bool, default=True
+            Print detailed validation results
         
         Returns
         -------
         pd.DataFrame
-            Validation summary showing parameter validity for each regime
+            Validation summary with goodness-of-fit statistics
         """
         if self.regime_distributions is None:
             raise ValueError("Must call fit_regime_distributions() first")
+        
+        from scipy import stats
         
         validation = []
         
         for regime, params in self.regime_distributions.items():
             dist_type = params['distribution']
+            returns = self.kama_msr.returns[self.kama_msr.regime_labels == regime]
             
+            # Parameter validity
             if dist_type == 'normal':
                 loc, scale = params['params']
                 valid = scale > 0 and np.isfinite(loc) and np.isfinite(scale)
+                dist_obj = stats.norm(loc=loc, scale=scale)
                 
             elif dist_type == 'skewnorm':
                 a, loc, scale = params['params']
                 valid = scale > 0 and all(np.isfinite([a, loc, scale]))
+                dist_obj = stats.skewnorm(a, loc=loc, scale=scale)
                 
             elif dist_type == 'student_t':
                 df, loc, scale = params['params']
                 valid = df > 0 and scale > 0 and all(np.isfinite([df, loc, scale]))
+                dist_obj = stats.t(df, loc=loc, scale=scale)
             
             elif dist_type == 'norminvgauss':
                 a, b, loc, scale = params['params']
                 valid = (a > 0 and abs(b) < a and scale > 0 and 
                         all(np.isfinite([a, b, loc, scale])))
+                dist_obj = stats.norminvgauss(a, b, loc=loc, scale=scale)
                 
             else:
                 valid = False
+                dist_obj = None
+            
+            # Goodness-of-fit tests
+            if valid and len(returns) > 5:
+                # Kolmogorov-Smirnov test
+                ks_stat, ks_pval = stats.kstest(returns, dist_obj.cdf)
+                
+                # Anderson-Darling test (for normal only)
+                if dist_type == 'normal':
+                    ad_result = stats.anderson(returns, dist='norm')
+                    ad_stat = ad_result.statistic
+                    # Use 5% critical value
+                    ad_pval = 0.05 if ad_stat < ad_result.critical_values[2] else 0.01
+                else:
+                    ad_stat = np.nan
+                    ad_pval = np.nan
+                
+                # Chi-square test
+                observed, bin_edges = np.histogram(returns, bins=min(10, len(returns)//5))
+                expected = np.diff(dist_obj.cdf(bin_edges)) * len(returns)
+                # Remove bins with expected < 5
+                mask = expected >= 5
+                if mask.sum() > 1:
+                    # Normalize to ensure sums match (handle numerical precision)
+                    obs_masked = observed[mask]
+                    exp_masked = expected[mask]
+                    exp_masked = exp_masked * (obs_masked.sum() / exp_masked.sum())  # Rescale
+                    chi2_stat, chi2_pval = stats.chisquare(obs_masked, exp_masked)
+                else:
+                    chi2_stat, chi2_pval = np.nan, np.nan
+                
+                # Q-Q plot correlation
+                theoretical_quantiles = dist_obj.ppf(np.linspace(0.01, 0.99, len(returns)))
+                empirical_quantiles = np.sort(returns)
+                qq_corr = np.corrcoef(theoretical_quantiles, empirical_quantiles)[0, 1]
+                
+            else:
+                ks_stat, ks_pval = np.nan, np.nan
+                ad_stat, ad_pval = np.nan, np.nan
+                chi2_stat, chi2_pval = np.nan, np.nan
+                qq_corr = np.nan
             
             validation.append({
                 'regime': regime,
                 'distribution': dist_type,
+                'n_obs': len(returns),
                 'valid': valid,
+                'KS_stat': ks_stat,
+                'KS_pval': ks_pval,
+                'AD_stat': ad_stat,
+                'AD_pval': ad_pval,
+                'Chi2_stat': chi2_stat,
+                'Chi2_pval': chi2_pval,
+                'QQ_corr': qq_corr,
                 'loc': params.get('loc'),
                 'scale': params.get('scale'),
-                'df': params.get('df', np.nan),
-                'a': params.get('a', np.nan),
-                'b': params.get('b', np.nan),
-                'n_obs': params['empirical']['n']
+                'AIC': params.get('aic', np.nan)
             })
         
         df = pd.DataFrame(validation)
         
-        print("\n" + "="*80)
-        print("DISTRIBUTION PARAMETER VALIDATION")
-        print("="*80)
-        print(df.to_string(index=False))
-        print("="*80)
-        
-        if not df['valid'].all():
-            invalid = df[~df['valid']]
-            print(f"\n⚠️  WARNING: {len(invalid)} regime(s) have invalid parameters!")
-            print(invalid.to_string(index=False))
-        else:
-            print("\n✓ All distributions have valid parameters")
+        if verbose:
+            print("\n" + "="*80)
+            print("DISTRIBUTION GOODNESS-OF-FIT VALIDATION")
+            print("="*80)
+            print("\nParameter Validity & Sample Size:")
+            print(df[['regime', 'distribution', 'n_obs', 'valid']].to_string(index=False))
+            
+            print("\nGoodness-of-Fit Tests (p-values):")
+            print(df[['regime', 'KS_pval', 'AD_pval', 'Chi2_pval', 'QQ_corr']].to_string(index=False))
+            
+            print("\nInterpretation:")
+            print("  - p-value > 0.05: Distribution fits well (cannot reject)")
+            print("  - p-value < 0.05: Distribution may not fit well (reject)")
+            print("  - QQ_corr > 0.95: Excellent fit")
+            print("  - QQ_corr > 0.90: Good fit")
+            
+            # Flag poor fits
+            poor_fits = df[(df['KS_pval'] < 0.05) | (df['QQ_corr'] < 0.90)]
+            if len(poor_fits) > 0:
+                print(f"\n⚠️  WARNING: {len(poor_fits)} regime(s) have poor fit:")
+                print(poor_fits[['regime', 'distribution', 'KS_pval', 'QQ_corr']].to_string(index=False))
+            else:
+                print("\n✓ All distributions pass goodness-of-fit tests")
+            
+            print("="*80)
         
         self.validation_df = df
         return df
@@ -796,6 +875,219 @@ class BayesianForwardSimulator:
         
         return fig
     
+    def plot_distribution_qq(
+        self,
+        figsize: Tuple[int, int] = (12, 10),
+        save_path: Optional[str] = None
+    ) -> plt.Figure:
+        """
+        Plot Q-Q plots for all regime distributions.
+        
+        Quantile-Quantile plots compare empirical vs. theoretical quantiles
+        to visually assess goodness of fit.
+        
+        Parameters
+        ----------
+        figsize : tuple, default=(12, 10)
+            Figure size
+        save_path : str, optional
+            Path to save figure
+            
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The generated figure with 4 subplots (one per regime)
+        """
+        if self.regime_distributions is None:
+            raise ValueError("Must call fit_regime_distributions() first")
+        
+        from scipy import stats
+        
+        regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+        
+        fig, axes = plt.subplots(2, 2, figsize=figsize)
+        axes = axes.flatten()
+        
+        for regime in range(4):
+            ax = axes[regime]
+            
+            # Get data and distribution
+            returns = self.kama_msr.returns[self.kama_msr.regime_labels == regime]
+            params = self.regime_distributions[regime]
+            dist_type = params['distribution']
+            
+            if len(returns) < 5:
+                ax.text(0.5, 0.5, f'Insufficient data\n(n={len(returns)})',
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12)
+                ax.set_title(f'Regime {regime} ({regime_names[regime]})',
+                           fontweight='bold')
+                continue
+            
+            # Create theoretical distribution
+            if dist_type == 'normal':
+                loc, scale = params['params']
+                dist_obj = stats.norm(loc=loc, scale=scale)
+            elif dist_type == 'skewnorm':
+                a, loc, scale = params['params']
+                dist_obj = stats.skewnorm(a, loc=loc, scale=scale)
+            elif dist_type == 'student_t':
+                df, loc, scale = params['params']
+                dist_obj = stats.t(df, loc=loc, scale=scale)
+            elif dist_type == 'norminvgauss':
+                a, b, loc, scale = params['params']
+                dist_obj = stats.norminvgauss(a, b, loc=loc, scale=scale)
+            
+            # Generate Q-Q plot data
+            n = len(returns)
+            probabilities = np.linspace(1/(n+1), n/(n+1), n)
+            theoretical_quantiles = dist_obj.ppf(probabilities)
+            empirical_quantiles = np.sort(returns)
+            
+            # Plot
+            ax.scatter(theoretical_quantiles, empirical_quantiles,
+                      alpha=0.6, s=20, edgecolors='none')
+            
+            # Add diagonal line (perfect fit)
+            min_val = min(theoretical_quantiles.min(), empirical_quantiles.min())
+            max_val = max(theoretical_quantiles.max(), empirical_quantiles.max())
+            ax.plot([min_val, max_val], [min_val, max_val],
+                   'r--', linewidth=2, label='Perfect Fit')
+            
+            # Compute correlation
+            corr = np.corrcoef(theoretical_quantiles, empirical_quantiles)[0, 1]
+            
+            # Format
+            ax.set_xlabel('Theoretical Quantiles', fontsize=10)
+            ax.set_ylabel('Empirical Quantiles', fontsize=10)
+            ax.set_title(
+                f'Regime {regime} ({regime_names[regime]})\n'
+                f'{dist_type}, n={len(returns)}, corr={corr:.4f}',
+                fontweight='bold', fontsize=11
+            )
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8)
+        
+        plt.suptitle(
+            'Q-Q Plots: Empirical vs. Theoretical Quantiles',
+            fontsize=14, fontweight='bold', y=0.995
+        )
+        plt.tight_layout()
+        
+        if save_path:
+            fig.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Figure saved to {save_path}")
+        
+        return fig
+    
+    def plot_distribution_fit(
+        self,
+        figsize: Tuple[int, int] = (14, 10),
+        bins: int = 50,
+        save_path: Optional[str] = None
+    ) -> plt.Figure:
+        """
+        Plot histograms with fitted distribution overlays.
+        
+        Parameters
+        ----------
+        figsize : tuple, default=(14, 10)
+            Figure size
+        bins : int, default=50
+            Number of histogram bins
+        save_path : str, optional
+            Path to save figure
+            
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The generated figure with 4 subplots
+        """
+        if self.regime_distributions is None:
+            raise ValueError("Must call fit_regime_distributions() first")
+        
+        from scipy import stats
+        
+        regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+        
+        fig, axes = plt.subplots(2, 2, figsize=figsize)
+        axes = axes.flatten()
+        
+        for regime in range(4):
+            ax = axes[regime]
+            
+            # Get data and distribution
+            returns = self.kama_msr.returns[self.kama_msr.regime_labels == regime]
+            params = self.regime_distributions[regime]
+            dist_type = params['distribution']
+            
+            if len(returns) < 5:
+                ax.text(0.5, 0.5, f'Insufficient data\n(n={len(returns)})',
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12)
+                ax.set_title(f'Regime {regime} ({regime_names[regime]})',
+                           fontweight='bold')
+                continue
+            
+            # Plot histogram
+            ax.hist(returns, bins=bins, density=True, alpha=0.6,
+                   color='steelblue', edgecolor='black', linewidth=0.5,
+                   label='Empirical')
+            
+            # Create theoretical distribution
+            if dist_type == 'normal':
+                loc, scale = params['params']
+                dist_obj = stats.norm(loc=loc, scale=scale)
+            elif dist_type == 'skewnorm':
+                a, loc, scale = params['params']
+                dist_obj = stats.skewnorm(a, loc=loc, scale=scale)
+            elif dist_type == 'student_t':
+                df, loc, scale = params['params']
+                dist_obj = stats.t(df, loc=loc, scale=scale)
+            elif dist_type == 'norminvgauss':
+                a, b, loc, scale = params['params']
+                dist_obj = stats.norminvgauss(a, b, loc=loc, scale=scale)
+            
+            # Plot fitted distribution
+            x = np.linspace(returns.min(), returns.max(), 200)
+            ax.plot(x, dist_obj.pdf(x), 'r-', linewidth=2, label='Fitted')
+            
+            # Statistics
+            mean_emp = returns.mean()
+            std_emp = returns.std()
+            skew_emp = stats.skew(returns)
+            kurt_emp = stats.kurtosis(returns)
+            
+            # Format
+            ax.set_xlabel('Return', fontsize=10)
+            ax.set_ylabel('Density', fontsize=10)
+            ax.set_title(
+                f'Regime {regime} ({regime_names[regime]})\n'
+                f'{dist_type}, n={len(returns)}',
+                fontweight='bold', fontsize=11
+            )
+            ax.legend(fontsize=9, loc='best')
+            ax.grid(True, alpha=0.3)
+            
+            # Add text box with statistics
+            textstr = f'μ={mean_emp:.4f}\nσ={std_emp:.4f}\nskew={skew_emp:.2f}\nkurt={kurt_emp:.2f}'
+            ax.text(0.98, 0.97, textstr, transform=ax.transAxes,
+                   fontsize=8, verticalalignment='top',
+                   horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.suptitle(
+            'Distribution Fit: Empirical vs. Fitted',
+            fontsize=14, fontweight='bold', y=0.995
+        )
+        plt.tight_layout()
+        
+        if save_path:
+            fig.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Figure saved to {save_path}")
+        
+        return fig
+    
     def plot_terminal_distribution(
         self,
         figsize: Tuple[int, int] = (10, 6),
@@ -874,6 +1166,159 @@ class BayesianForwardSimulator:
             print(f"Figure saved to {save_path}")
         
         return fig
+    
+    def validate_simulations(
+        self, 
+        simulated_returns: Optional[Union[pd.DataFrame, np.ndarray]] = None,
+        verbose: bool = True
+    ) -> Dict:
+        """
+        Validate simulated returns against fitted distributions.
+        
+        Checks:
+        - Simulated vs. theoretical moments (mean, std, skew, kurtosis)
+        - Distribution coverage tests
+        - Serial correlation tests
+        - Regime frequency validation
+        
+        Parameters
+        ----------
+        simulated_returns : pd.DataFrame or np.ndarray, optional
+            Simulated returns to validate. If None, uses self.simulated_returns.
+            Can be from copula simulation or individual simulation.
+            Shape: (n_days, n_simulations) for DataFrame or any shape for ndarray
+        verbose : bool, default=True
+            Print validation results
+            
+        Returns
+        -------
+        dict
+            Validation statistics and test results
+        """
+        # Use provided simulated_returns or fall back to self.simulated_returns
+        if simulated_returns is None:
+            if self.simulated_returns is None:
+                raise ValueError("Must provide simulated_returns or call simulate() first")
+            returns_to_validate = self.simulated_returns
+        else:
+            returns_to_validate = simulated_returns
+        
+        from scipy import stats
+        
+        results = {}
+        
+        # Extract all simulated returns
+        if hasattr(returns_to_validate, 'values'):
+            all_returns = returns_to_validate.values.flatten()
+        else:
+            all_returns = returns_to_validate.flatten()
+        
+        # Compute theoretical moments from regime distributions
+        regime_probs = self.forward_probs.iloc[:, :4].mean(axis=0).values
+        theoretical_mean = 0
+        theoretical_var = 0
+        
+        for regime, prob in enumerate(regime_probs):
+            dist_params = self.regime_distributions[regime]
+            if dist_params['distribution'] == 'normal':
+                loc, scale = dist_params['params']
+                theoretical_mean += prob * loc
+                theoretical_var += prob * (scale**2 + loc**2)
+            elif dist_params['distribution'] == 'skewnorm':
+                a, loc, scale = dist_params['params']
+                theoretical_mean += prob * loc
+                theoretical_var += prob * (scale**2 + loc**2)
+            elif dist_params['distribution'] == 'student_t':
+                df, loc, scale = dist_params['params']
+                theoretical_mean += prob * loc
+                if df > 2:
+                    theoretical_var += prob * (scale**2 * df/(df-2) + loc**2)
+        
+        theoretical_var -= theoretical_mean**2
+        theoretical_std = np.sqrt(theoretical_var)
+        
+        # Compute simulated moments
+        simulated_mean = np.mean(all_returns)
+        simulated_std = np.std(all_returns)
+        simulated_skew = stats.skew(all_returns)
+        simulated_kurt = stats.kurtosis(all_returns)
+        
+        # Moment tests
+        results['moments'] = {
+            'mean_theoretical': theoretical_mean,
+            'mean_simulated': simulated_mean,
+            'mean_diff': simulated_mean - theoretical_mean,
+            'std_theoretical': theoretical_std,
+            'std_simulated': simulated_std,
+            'std_ratio': simulated_std / theoretical_std if theoretical_std > 0 else np.nan,
+            'skewness': simulated_skew,
+            'kurtosis': simulated_kurt
+        }
+        
+        # Coverage test: Are simulated returns within expected range?
+        # Use combined distribution (mixture)
+        percentiles = [1, 5, 25, 50, 75, 95, 99]
+        coverage = {}
+        for p in percentiles:
+            empirical = np.percentile(all_returns, p)
+            coverage[f'p{p}'] = empirical
+        results['percentiles'] = coverage
+        
+        # Serial correlation test (Ljung-Box)
+        if len(all_returns) > 20:
+            lb_stat, lb_pval = stats.acorr_ljungbox(all_returns[:min(1000, len(all_returns))], 
+                                                    lags=[10], return_df=False)
+            results['serial_correlation'] = {
+                'ljung_box_stat': lb_stat[0],
+                'ljung_box_pval': lb_pval[0],
+                'significant': lb_pval[0] < 0.05
+            }
+        
+        # Normality test (on daily returns)
+        if len(all_returns) > 50:
+            jb_stat, jb_pval = stats.jarque_bera(all_returns[:min(5000, len(all_returns))])
+            results['normality_test'] = {
+                'jarque_bera_stat': jb_stat,
+                'jarque_bera_pval': jb_pval,
+                'is_normal': jb_pval > 0.05
+            }
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("SIMULATION VALIDATION")
+            print("="*80)
+            
+            print("\nMoment Comparison:")
+            print(f"  Mean:     Theoretical={theoretical_mean:.6f}, Simulated={simulated_mean:.6f}, Diff={results['moments']['mean_diff']:.6f}")
+            print(f"  Std Dev:  Theoretical={theoretical_std:.6f}, Simulated={simulated_std:.6f}, Ratio={results['moments']['std_ratio']:.3f}")
+            print(f"  Skewness: {simulated_skew:.4f}")
+            print(f"  Kurtosis: {simulated_kurt:.4f}")
+            
+            print("\nDistribution Percentiles:")
+            for p in [1, 5, 25, 50, 75, 95, 99]:
+                print(f"  {p:>2}th: {coverage[f'p{p}']:>8.4f}")
+            
+            if 'serial_correlation' in results:
+                print("\nSerial Correlation (Ljung-Box Test):")
+                print(f"  Statistic: {results['serial_correlation']['ljung_box_stat']:.4f}")
+                print(f"  p-value:   {results['serial_correlation']['ljung_box_pval']:.4f}")
+                if results['serial_correlation']['significant']:
+                    print("  ⚠️  WARNING: Significant serial correlation detected")
+                else:
+                    print("  ✓ No significant serial correlation")
+            
+            if 'normality_test' in results:
+                print("\nNormality Test (Jarque-Bera):")
+                print(f"  Statistic: {results['normality_test']['jarque_bera_stat']:.4f}")
+                print(f"  p-value:   {results['normality_test']['jarque_bera_pval']:.4f}")
+                if results['normality_test']['is_normal']:
+                    print("  ✓ Cannot reject normality")
+                else:
+                    print("  ⚠️  Non-normal distribution (expected for regime-switching)")
+            
+            print("="*80)
+        
+        return results
     
     def summary_statistics(self) -> pd.DataFrame:
         """
@@ -984,3 +1429,423 @@ class BayesianForwardSimulator:
             'simulated_returns': self.simulated_returns,
             'summary_stats': stats
         }
+    
+    # ========================================================================
+    # GAUSSIAN COPULA METHODS (Phase 3)
+    # ========================================================================
+    
+    @staticmethod
+    def simulate_multiasset_copula(
+        assets_forward_probs: Dict[str, pd.DataFrame],
+        assets_regime_distributions: Dict[str, Dict[int, Dict]],
+        regime_correlations: Dict[int, pd.DataFrame],
+        market_regime_probs: pd.DataFrame,
+        market_regime_distributions: Dict[int, Dict],
+        regime_concordance: Dict[str, pd.DataFrame],
+        market_asset: str = 'SPDR S&P 500 ETF',
+        n_simulations: int = 10000,
+        random_seed: int = 1010,
+        verbose: bool = True
+    ) -> Dict[str, np.ndarray]:
+        """
+        Simulate correlated multi-asset return paths using Gaussian Copula with Bayesian regime updates.
+        
+        Workflow (Mathematically Sound):
+        --------------------------------
+        1. Start with unconditional forward regime probabilities for all assets
+           - These come from KMRF with Bayesian decay over time
+           - P_t(regime) at each day t from forward probability computation
+        
+        2. For each simulation path:
+           a. Initialize regime probabilities from day 0 unconditional priors
+           b. For each day:
+              - Sample market regime from current market regime distribution
+              - Sample asset regimes conditionally: P(asset_regime | market_regime, asset_prior)
+              - Sample correlated returns from regime-dependent copula
+              - Perform Bayesian update on market regime based on observed return
+              - Update asset regime priors for next day
+        
+        Mathematical Foundation:
+        -----------------------
+        Market Regime Evolution:
+            P(M_t | r_{0:t-1}) ∝ P(r_{t-1} | M_{t-1}) × P(M_t | M_{t-1})
+            where P(M_t | M_{t-1}) comes from KMRF forward probabilities
+        
+        Asset Regime Conditioning:
+            P(A_t | M_t, prior) = P(A_t | M_t) × P(A_t) / Z
+            where P(A_t | M_t) is the concordance matrix
+                  P(A_t) is the unconditional KMRF forward probability
+                  Z is normalization constant
+        
+        Return Generation:
+            r_t ~ Copula(F_1(r_1 | A_1,t), ..., F_n(r_n | A_n,t); Σ_{M_t})
+            where Σ_{M_t} is the correlation matrix for market regime M_t
+        
+        Parameters
+        ----------
+        assets_forward_probs : Dict[str, pd.DataFrame]
+            Unconditional forward regime probabilities for each asset (n_days × 4)
+            From KMRF with Bayesian decay - these are time-varying priors
+        
+        assets_regime_distributions : Dict[str, Dict[int, Dict]]
+            Distribution parameters for each asset and regime
+            Format: {asset: {regime_id: {'distribution': str, 'params': dict}}}
+        
+        regime_correlations : Dict[int, pd.DataFrame]
+            Correlation matrices conditional on market regime
+            Format: {regime_id: DataFrame with correlation matrix}
+        
+        market_regime_probs : pd.DataFrame
+            Market asset's unconditional forward regime probabilities (n_days × 4)
+        
+        market_regime_distributions : Dict[int, Dict]
+            Distribution parameters for market asset's regime-specific distributions
+            Format: {regime_id: {'distribution': str, 'params': dict}}
+            Used for Bayesian updates even when market asset not in portfolio
+        
+        regime_concordance : Dict[str, pd.DataFrame]
+            Conditional regime probabilities P(asset_regime | market_regime)
+            Format: {asset: DataFrame where [i,j] = P(asset_regime=j | market_regime=i)}
+        
+        market_asset : str, default='SPDR S&P 500 ETF'
+            Asset defining the market regime
+        
+        n_simulations : int, default=10000
+            Number of Monte Carlo simulation paths
+        
+        random_seed : int, default=1010
+            Random seed for reproducibility
+        
+        verbose : bool, default=True
+            Print progress and diagnostic information
+            
+        Returns
+        -------
+        dict
+            Dictionary with keys:
+            - 'returns': Dict[str, np.ndarray] - Simulated daily returns for each asset
+              Shape: {asset_name: (n_simulations, n_days)}
+            - 'market_regimes': np.ndarray - Market regime assignments
+              Shape: (n_simulations, n_days)
+            - 'asset_regimes': Dict[str, np.ndarray] - Asset regime assignments
+              Shape: {asset_name: (n_simulations, n_days)}
+        
+        Notes
+        -----
+        - Market asset can be in portfolio or loaded separately
+        - All assets must have same number of days
+        - Regime concordance is required (not optional in corrected version)
+        - Each simulation path has independent regime evolution with Bayesian updates
+        - Bayesian updates use market_regime_distributions even when market asset not in portfolio
+        """
+        np.random.seed(random_seed)
+        
+        # Setup
+        asset_names = list(assets_forward_probs.keys())
+        n_assets = len(asset_names)
+        n_days = len(market_regime_probs)
+        
+        # Check if market asset is in portfolio
+        market_asset_in_portfolio = market_asset in asset_names
+        market_asset_idx = asset_names.index(market_asset) if market_asset_in_portfolio else None
+        
+        # Validate
+        for asset in asset_names:
+            if len(assets_forward_probs[asset]) != n_days:
+                raise ValueError(f"Asset {asset} has {len(assets_forward_probs[asset])} days, expected {n_days}")
+        
+        for regime_id, corr_matrix in regime_correlations.items():
+            if list(corr_matrix.index) != asset_names:
+                raise ValueError(f"Regime {regime_id} correlation matrix doesn't match assets")
+        
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"GAUSSIAN COPULA MULTI-ASSET SIMULATION WITH BAYESIAN UPDATES")
+            print(f"{'='*80}")
+            print(f"Assets: {n_assets} | Days: {n_days} | Simulations: {n_simulations:,}")
+            print(f"Market asset: {market_asset}")
+            print(f"Regime concordance: ENABLED")
+        
+        # Initialize output
+        simulated_returns = {asset: np.zeros((n_simulations, n_days)) for asset in asset_names}
+        simulated_market_regimes = np.zeros((n_simulations, n_days), dtype=int)
+        simulated_asset_regimes = {asset: np.zeros((n_simulations, n_days), dtype=int) for asset in asset_names}
+        
+        # Pre-compute Cholesky decompositions for correlation matrices
+        cholesky_matrices = {}
+        for regime_id, corr_matrix in regime_correlations.items():
+            # Handle both DataFrame and ndarray inputs
+            corr_array = corr_matrix.values if hasattr(corr_matrix, 'values') else corr_matrix
+            
+            try:
+                cholesky_matrices[regime_id] = np.linalg.cholesky(corr_array)
+            except np.linalg.LinAlgError:
+                eigenvals, eigenvecs = np.linalg.eigh(corr_array)
+                eigenvals = np.maximum(eigenvals, 1e-10)
+                cholesky_matrices[regime_id] = eigenvecs @ np.diag(np.sqrt(eigenvals))
+        
+        # Pre-compute distribution parameters
+        dist_info = {
+            asset: {regime_id: assets_regime_distributions[asset][regime_id] for regime_id in range(4)}
+            for asset in asset_names
+        }
+        
+        # Extract arrays for faster access
+        market_probs_array = market_regime_probs.iloc[:, :4].values
+        assets_probs_arrays = {
+            asset: probs.iloc[:, :4].values
+            for asset, probs in assets_forward_probs.items()
+        }
+        concordance_arrays = {
+            asset: (regime_concordance[asset].values if hasattr(regime_concordance[asset], 'values') 
+                   else regime_concordance[asset])
+            for asset in asset_names if asset != market_asset
+        }
+        
+        if verbose:
+            print(f"\nRunning simulations...")
+        
+        # Main simulation loop with Bayesian updates
+        for sim_idx in range(n_simulations):
+            # Initialize regime probabilities from unconditional forward probs (day 0)
+            market_regime_probs_current = market_probs_array[0].copy()
+            asset_regime_probs_current = {
+                asset: assets_probs_arrays[asset][0].copy()
+                for asset in asset_names if asset != market_asset
+            }
+            
+            for day in range(n_days):
+                # ================================================================
+                # STEP 1: Sample market regime from current posterior
+                # ================================================================
+                market_regime = np.random.choice(4, p=market_regime_probs_current)
+                
+                # Store market regime
+                simulated_market_regimes[sim_idx, day] = market_regime
+                
+                # ================================================================
+                # STEP 2: Sample asset regimes conditionally on market regime
+                # ================================================================
+                asset_regimes = np.zeros(n_assets, dtype=int)
+                
+                # If market asset is in portfolio, set its regime
+                if market_asset_in_portfolio:
+                    asset_regimes[market_asset_idx] = market_regime
+                
+                for asset_idx, asset in enumerate(asset_names):
+                    if asset != market_asset:
+                        # Combine unconditional prior with market regime conditioning
+                        unconditional_prior = asset_regime_probs_current[asset]
+                        conditional_on_market = concordance_arrays[asset][market_regime, :]
+                        
+                        # P(asset_regime | market_regime, prior) ∝ P(asset | market) × P(asset)
+                        combined_probs = conditional_on_market * unconditional_prior
+                        combined_probs = combined_probs / combined_probs.sum()
+                        
+                        asset_regimes[asset_idx] = np.random.choice(4, p=combined_probs)
+                
+                # Store asset regimes
+                for asset_idx, asset in enumerate(asset_names):
+                    simulated_asset_regimes[asset][sim_idx, day] = asset_regimes[asset_idx]
+                
+                # ================================================================
+                # STEP 3: Sample correlated returns using Gaussian copula
+                # ================================================================
+                # Get Cholesky decomposition for current market regime
+                cholesky = cholesky_matrices[market_regime]
+                
+                # Generate independent standard normals
+                z_independent = np.random.standard_normal(n_assets)
+                
+                # Induce correlation via Cholesky: z_correlated = L @ z_independent
+                z_correlated = cholesky @ z_independent
+                
+                # Transform to uniform [0,1] via standard normal CDF
+                u = norm.cdf(z_correlated)
+                u = np.clip(u, 1e-10, 1 - 1e-10)  # Avoid numerical issues
+                
+                # Transform to returns using asset-specific regime distributions
+                returns = np.zeros(n_assets)
+                for asset_idx, asset in enumerate(asset_names):
+                    regime = asset_regimes[asset_idx]
+                    returns[asset_idx] = BayesianForwardSimulator._inverse_cdf_copula(
+                        u[asset_idx],
+                        dist_info[asset][regime]
+                    )
+                
+                # Store returns
+                for asset_idx, asset in enumerate(asset_names):
+                    simulated_returns[asset][sim_idx, day] = returns[asset_idx]
+                
+                # ================================================================
+                # STEP 4: Bayesian update for next day
+                # ================================================================
+                if day < n_days - 1:
+                    # Sample market return for Bayesian update
+                    # Use standard normal to get correlated uniform, then transform
+                    if market_asset_in_portfolio:
+                        # Market asset already sampled - use its return
+                        market_return = returns[market_asset_idx]
+                    else:
+                        # Market asset not in portfolio - sample separately for update
+                        # Use same market regime that was sampled
+                        market_return = BayesianForwardSimulator._inverse_cdf_copula(
+                            np.random.uniform(0, 1),  # Independent sample for market
+                            market_regime_distributions[market_regime]
+                        )
+                    
+                    # Compute likelihoods P(return | regime) for all regimes
+                    likelihoods = np.array([
+                        BayesianForwardSimulator._compute_likelihood(
+                            market_return,
+                            market_regime_distributions[regime_id]
+                        )
+                        for regime_id in range(4)
+                    ])
+                    
+                    # Prior from KMRF forward probabilities (next day)
+                    prior = market_probs_array[day + 1]
+                    
+                    # Bayesian update: P(regime | return) ∝ P(return | regime) × P(regime)
+                    posterior = likelihoods * prior
+                    posterior = posterior / posterior.sum()
+                    
+                    # Update for next iteration
+                    market_regime_probs_current = posterior
+                    
+                    # Update asset regime priors for next day
+                    for asset in asset_names:
+                        if asset != market_asset:
+                            asset_regime_probs_current[asset] = assets_probs_arrays[asset][day + 1]
+            
+            # Progress update
+            if verbose and (sim_idx + 1) % 2000 == 0:
+                print(f"  Completed {sim_idx + 1:,} / {n_simulations:,} simulations")
+        
+        if verbose:
+            print(f"✓ Completed all {n_simulations:,} simulations")
+            print(f"\nSimulation output shapes:")
+            for asset in asset_names:
+                print(f"  {asset}: {simulated_returns[asset].shape}")
+        
+        return {
+            'returns': simulated_returns,
+            'market_regimes': simulated_market_regimes,
+            'asset_regimes': simulated_asset_regimes
+        }
+    
+    @staticmethod
+    def _compute_likelihood(return_value: float, dist_params: Dict) -> float:
+        """
+        Compute likelihood P(return | regime) using PDF of fitted distribution.
+        
+        This is used for Bayesian updates to the market regime probabilities after
+        observing each day's simulated return.
+        
+        Parameters
+        ----------
+        return_value : float
+            Observed return value
+        dist_params : dict
+            Distribution parameters with keys 'distribution' and 'params'
+        
+        Returns
+        -------
+        float
+            Probability density at return_value, with numerical safeguards
+        
+        Notes
+        -----
+        - Returns small epsilon (1e-100) instead of exactly zero to avoid numerical issues
+        - Handles all distribution types: normal, skewnorm, student_t, norminvgauss
+        """
+        epsilon = 1e-100
+        dist_type = dist_params['distribution']
+        params = dist_params['params']
+        
+        try:
+            if dist_type == 'normal':
+                loc, scale = params
+                pdf = norm.pdf(return_value, loc=loc, scale=scale)
+            
+            elif dist_type == 'skewnorm':
+                a, loc, scale = params
+                pdf = skewnorm.pdf(return_value, a, loc=loc, scale=scale)
+            
+            elif dist_type == 'student_t':
+                df, loc, scale = params
+                pdf = t.pdf(return_value, df, loc=loc, scale=scale)
+            
+            elif dist_type == 'norminvgauss':
+                a, b, loc, scale = params
+                pdf = norminvgauss.pdf(return_value, a, b, loc=loc, scale=scale)
+            
+            else:
+                raise ValueError(f"Unknown distribution type: {dist_type}")
+            
+            # Safeguard against numerical zeros
+            return max(pdf, epsilon)
+        
+        except Exception as e:
+            # If PDF computation fails, return small value to avoid breaking update
+            return epsilon
+
+    
+    @staticmethod
+    def _inverse_cdf_copula(u: float, dist_params: Dict) -> float:
+        """
+        Transform uniform [0,1] to distribution-specific sample via inverse CDF.
+        
+        This is the key step in Gaussian Copula that preserves marginal distributions
+        while using the copula for correlation structure.
+        
+        Parameters
+        ----------
+        u : float
+            Uniform random variable in [0, 1]
+        dist_params : dict
+            Distribution parameters with keys 'distribution' and 'params'
+            
+        Returns
+        -------
+        float
+            Sample from the specified distribution
+            
+        Notes
+        -----
+        - Uses scipy's .ppf() (percent point function = inverse CDF)
+        - Handles edge cases (u=0, u=1) with small epsilon
+        - Supports: normal, skewnorm, student_t, norminvgauss
+        """
+        # Handle edge cases
+        epsilon = 1e-10
+        u = np.clip(u, epsilon, 1 - epsilon)
+        
+        dist_type = dist_params['distribution']
+        params = dist_params['params']
+        
+        try:
+            if dist_type == 'normal':
+                loc, scale = params
+                return norm.ppf(u, loc=loc, scale=scale)
+            
+            elif dist_type == 'skewnorm':
+                a, loc, scale = params
+                return skewnorm.ppf(u, a, loc=loc, scale=scale)
+            
+            elif dist_type == 'student_t':
+                df, loc, scale = params
+                return t.ppf(u, df, loc=loc, scale=scale)
+            
+            elif dist_type == 'norminvgauss':
+                a, b, loc, scale = params
+                return norminvgauss.ppf(u, a, b, loc=loc, scale=scale)
+            
+            else:
+                raise ValueError(f"Unknown distribution type: {dist_type}")
+        
+        except Exception as e:
+            raise ValueError(
+                f"Failed to compute inverse CDF for {dist_type} with u={u}: {e}"
+            )
+

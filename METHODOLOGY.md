@@ -12,12 +12,6 @@
 6. [Validation Methods](#validation-methods)
 
 ---
-## Core Model Components
-
-### KMRF (KAMA+MSR+RF) Regime Prediction Model
-- **KAMA+MSR**: Combines Kaufman's Adaptive Moving Average with Markov-Switching Regression
-- **Random Forest (XGBoost)**: Predicts market regimes based on KAMA+MSR labels
-- **Regime Classes**: Four regimes (LV bullish/bearish, HV bullish/bearish)
 
 ## Overview
 

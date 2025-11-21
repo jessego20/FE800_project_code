@@ -69,6 +69,7 @@ class KMRF:
         asset_class: str = 'us_equity',
         data_path: Optional[Union[str, Path]] = None,
         kama_msr_model_dir: Optional[Union[str, Path]] = None,
+        kama_msr_model: Optional[object] = None,
         end_date: str = '20181231',
         use_data_type: str = 'master',
         test_end_date: Optional[str] = None,
@@ -94,6 +95,10 @@ class KMRF:
             Path to the data file
         kama_msr_model_dir : str or Path, optional
             Path to the KAMA+MSR model directory
+        kama_msr_model : object, optional
+            Pre-loaded KAMA_MSR model object. If provided, labels will be extracted
+            from this model instead of loading from disk. Takes precedence over
+            kama_msr_model_dir.
         end_date : str, default='20181231'
             End date for KAMA+MSR model selection (training end date)
         use_data_type : str, default='master'
@@ -201,7 +206,7 @@ class KMRF:
         self.labels: Optional[pd.Series] = None  # Original KAMA+MSR 4-regime labels
         self.adapted_labels: Optional[pd.Series] = None  # Adapted 3-class KMRF labels
         self.macro_data: Optional[pd.DataFrame] = None
-        self.kama_msr_model: Optional[object] = None
+        self.kama_msr_model: Optional[object] = kama_msr_model  # Pre-loaded or will be loaded
         self.selected_features: Optional[List[str]] = None
         
         # Cross-asset data containers
@@ -594,42 +599,58 @@ class KMRF:
             print(f"  Total periods: {len(self.labels)}")
             
         else:
-            # Legacy loading from saved KAMA+MSR model files
-            if not self.kama_msr_model_dir.exists():
-                raise FileNotFoundError(f"KAMA+MSR model directory not found: {self.kama_msr_model_dir}")
+            # Check if model was already provided during initialization
+            if self.kama_msr_model is not None:
+                print(f"\n{'='*80}")
+                print(f"USING PRE-LOADED KAMA+MSR MODEL FOR {self.asset_name}")
+                print(f"{'='*80}")
+                
+                if not hasattr(self.kama_msr_model, 'regime_labels'):
+                    raise ValueError(f"No regime_labels attribute in provided model for: {self.asset_name}")
+                
+                self.labels = self.kama_msr_model.regime_labels.copy()
+                
+                print(f"✓ Using labels from pre-loaded model: {self.asset_name}")
+                print(f"  Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
+                print(f"  Total periods: {len(self.labels)}")
             
-            print(f"\n{'='*80}")
-            print(f"LOADING KAMA+MSR LABELS FOR {self.asset_name}")
-            print(f"{'='*80}")
-            print(f"Model directory: {self.kama_msr_model_dir}")
-            
-            # Try to find model file
-            model_pattern = f"{self.asset_name}_KAMA-MSR_4-regimes.pkl"
-            model_files = list(self.kama_msr_model_dir.glob(model_pattern))
-            
-            if not model_files:
-                asset_safe = self.asset_name.replace(' ', '_')
-                model_pattern = f"{asset_safe}_KAMA-MSR_4-regimes.pkl"
+            else:
+                # Legacy loading from saved KAMA+MSR model files
+                if not self.kama_msr_model_dir.exists():
+                    raise FileNotFoundError(f"KAMA+MSR model directory not found: {self.kama_msr_model_dir}")
+                
+                print(f"\n{'='*80}")
+                print(f"LOADING KAMA+MSR LABELS FOR {self.asset_name}")
+                print(f"{'='*80}")
+                print(f"Model directory: {self.kama_msr_model_dir}")
+                
+                # Try to find model file
+                model_pattern = f"{self.asset_name}_KAMA-MSR_4-regimes.pkl"
                 model_files = list(self.kama_msr_model_dir.glob(model_pattern))
-            
-            if not model_files:
-                raise FileNotFoundError(f"Model not found for: {self.asset_name}")
-            
-            model_file = model_files[0]
-            
-            print(f"Loading from: {model_file.name}")
-            
-            with open(model_file, 'rb') as f:
-                self.kama_msr_model = pickle.load(f)
-            
-            if not hasattr(self.kama_msr_model, 'regime_labels'):
-                raise ValueError(f"No regime_labels attribute in model for: {self.asset_name}")
-            
-            self.labels = self.kama_msr_model.regime_labels.copy()
-            
-            print(f"✓ Loaded labels for: {self.asset_name}")
-            print(f"  Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
-            print(f"  Total periods: {len(self.labels)}")
+                
+                if not model_files:
+                    asset_safe = self.asset_name.replace(' ', '_')
+                    model_pattern = f"{asset_safe}_KAMA-MSR_4-regimes.pkl"
+                    model_files = list(self.kama_msr_model_dir.glob(model_pattern))
+                
+                if not model_files:
+                    raise FileNotFoundError(f"Model not found for: {self.asset_name}")
+                
+                model_file = model_files[0]
+                
+                print(f"Loading from: {model_file.name}")
+                
+                with open(model_file, 'rb') as f:
+                    self.kama_msr_model = pickle.load(f)
+                
+                if not hasattr(self.kama_msr_model, 'regime_labels'):
+                    raise ValueError(f"No regime_labels attribute in model for: {self.asset_name}")
+                
+                self.labels = self.kama_msr_model.regime_labels.copy()
+                
+                print(f"✓ Loaded labels for: {self.asset_name}")
+                print(f"  Label date range: {self.labels.index[0]} to {self.labels.index[-1]}")
+                print(f"  Total periods: {len(self.labels)}")
         
         # Print distribution
         print(f"\n  Original 4-regime distribution:")
@@ -2630,7 +2651,9 @@ class KMRF:
         
         # Step 3: Load KAMA+MSR labels
         print(f"\n[Step 3/10] Loading KAMA+MSR Labels...")
-        kama_msr_labels = self.load_kama_msr_labels(use_master_label_df=use_master_files)
+        # Always load labels from KAMA_MSR model (either pre-loaded or from disk)
+        # Never use master_label_df.csv as it may be out of sync with specific end_date models
+        kama_msr_labels = self.load_kama_msr_labels(use_master_label_df=False)
         
         # Step 4: Adapt labels if needed
         if self.classification_type == 'adapted':
@@ -2796,14 +2819,14 @@ class KMRF:
         
         # Create instance with saved parameters
         # Note: use_data_type is inferred from saved data presence
+        # Removed deprecated parameters: validation_start, validation_end, test_start
+        # These are now handled via test_end_date parameter
         kmrf = cls(
             asset_name=model_data['asset_name'],
             asset_class=model_data['asset_class'],
             end_date=model_data['end_date'],
             use_data_type='master',  # Default, will be overridden by restored data
-            validation_start=model_data.get('validation_start'),
-            validation_end=model_data.get('validation_end'),
-            test_start=model_data.get('test_start'),
+            test_end_date=model_data.get('test_end_date'),  # Use new parameter name
             random_seed=model_data.get('random_seed', 1010),
             classification_type=model_data.get('classification_type', 'adapted'),
             feature_window_size=model_data.get('feature_window_size', 1),
