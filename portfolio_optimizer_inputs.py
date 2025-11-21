@@ -1992,44 +1992,119 @@ class PortfolioOptimizerInputs:
         # Load market asset if not already in portfolio
         if market_asset not in self.simulators:
             if verbose:
-                print(f"\n[Step 4/5] Market asset '{market_asset}' not in portfolio - loading separately...")
+                print(f"\n[Step 4/5] Market asset '{market_asset}' not in portfolio...")
             
-            try:
-                # Determine market asset class (typically us_equity for SPY)
-                market_asset_class = self.market_regime_asset_class
+            # For universe asset class, always use IVV (with full name)
+            if self.asset_class == 'universe':
+                ivv_full_name = 'IVV - iShares Core S&P 500 ETF'
                 
-                # Load market asset models
-                kama_msr_market, kmrf_market = self.load_models(
-                    market_asset, 
-                    verbose=False, 
-                    kmrf=True,
-                    asset_class_override=market_asset_class
-                )
-                
-                # Create market simulator
-                market_simulator = BayesianForwardSimulator(
-                    kama_msr=kama_msr_market,
-                    kmrf=kmrf_market,
-                    n_days=self.n_days,
-                    alpha_confidence=self.alpha,
-                    significance_level=self.sig_level
-                )
-                
-                # Compute forward probabilities and fit distributions
-                market_simulator.compute_forward_regime_probs()
-                market_simulator.fit_regime_distributions(verbose=False)
-                
-                # Store market regime info for Bayesian updates
-                market_regime_probs = market_simulator.forward_probs
-                market_regime_distributions = market_simulator.regime_distributions
-                
-                if verbose:
-                    print(f"  ✓ Market asset loaded: {market_asset}")
+                # Check if IVV is in portfolio
+                if ivv_full_name in self.simulators:
+                    if verbose:
+                        print(f"  Using {ivv_full_name} from portfolio as market asset")
                     
-            except Exception as e:
-                raise ValueError(
-                    f"Could not load market asset '{market_asset}' from asset class '{market_asset_class}': {e}"
-                )
+                    market_regime_probs = self.simulators[ivv_full_name].forward_probs
+                    market_regime_distributions = assets_regime_distributions[ivv_full_name]
+                    market_asset = ivv_full_name
+                else:
+                    # Load IVV separately
+                    try:
+                        if verbose:
+                            print(f"  Loading {ivv_full_name} as market asset...")
+                        
+                        kama_msr_market, kmrf_market = self.load_models(
+                            ivv_full_name,
+                            verbose=False,
+                            kmrf=True,
+                            asset_class_override='universe'
+                        )
+                        
+                        # Create market simulator
+                        market_simulator = BayesianForwardSimulator(
+                            kama_msr=kama_msr_market,
+                            kmrf=kmrf_market,
+                            n_days=self.n_days,
+                            alpha_confidence=self.alpha,
+                            significance_level=self.sig_level
+                        )
+                        
+                        # Compute forward probabilities and fit distributions
+                        market_simulator.compute_forward_regime_probs()
+                        market_simulator.fit_regime_distributions(verbose=False)
+                        
+                        # Store market regime info for Bayesian updates
+                        market_regime_probs = market_simulator.forward_probs
+                        market_regime_distributions = market_simulator.regime_distributions
+                        market_asset = ivv_full_name
+                        
+                        if verbose:
+                            print(f"  ✓ Market asset loaded: {ivv_full_name}")
+                    
+                    except Exception as e:
+                        if verbose:
+                            print(f"  ⚠️  Could not load IVV, using first portfolio asset as fallback")
+                        
+                        market_asset_proxy = self.asset_names[0]
+                        market_regime_probs = self.simulators[market_asset_proxy].forward_probs
+                        market_regime_distributions = assets_regime_distributions[market_asset_proxy]
+                        market_asset = market_asset_proxy
+            
+            elif self.asset_class == 'us_equity':
+                # For us_equity asset class, try to load SPY separately
+                try:
+                    if verbose:
+                        print(f"  Loading market asset separately...")
+                    
+                    # Determine market asset class (typically us_equity for SPY)
+                    market_asset_class = self.market_regime_asset_class
+                    
+                    # Load market asset models
+                    kama_msr_market, kmrf_market = self.load_models(
+                        market_asset, 
+                        verbose=False, 
+                        kmrf=True,
+                        asset_class_override=market_asset_class
+                    )
+                    
+                    # Create market simulator
+                    market_simulator = BayesianForwardSimulator(
+                        kama_msr=kama_msr_market,
+                        kmrf=kmrf_market,
+                        n_days=self.n_days,
+                        alpha_confidence=self.alpha,
+                        significance_level=self.sig_level
+                    )
+                    
+                    # Compute forward probabilities and fit distributions
+                    market_simulator.compute_forward_regime_probs()
+                    market_simulator.fit_regime_distributions(verbose=False)
+                    
+                    # Store market regime info for Bayesian updates
+                    market_regime_probs = market_simulator.forward_probs
+                    market_regime_distributions = market_simulator.regime_distributions
+                    
+                    if verbose:
+                        print(f"  ✓ Market asset loaded: {market_asset}")
+                        
+                except Exception as e:
+                    # Fallback to using first portfolio asset
+                    market_asset_proxy = self.asset_names[0]
+                    if verbose:
+                        print(f"  ⚠️  Could not load SPY, using '{market_asset_proxy}' as market proxy")
+                    
+                    market_regime_probs = self.simulators[market_asset_proxy].forward_probs
+                    market_regime_distributions = assets_regime_distributions[market_asset_proxy]
+                    market_asset = market_asset_proxy
+            
+            else:
+                # For other asset classes (commodity, int_equity, etc.), use first portfolio asset
+                market_asset_proxy = self.asset_names[0]
+                if verbose:
+                    print(f"  Using portfolio asset '{market_asset_proxy}' as market proxy")
+                
+                market_regime_probs = self.simulators[market_asset_proxy].forward_probs
+                market_regime_distributions = assets_regime_distributions[market_asset_proxy]
+                market_asset = market_asset_proxy
         else:
             # Market asset is in portfolio - use existing simulator
             market_regime_probs = self.simulators[market_asset].forward_probs
