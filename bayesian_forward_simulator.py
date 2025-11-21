@@ -1521,9 +1521,14 @@ class BayesianForwardSimulator:
             
         Returns
         -------
-        Dict[str, np.ndarray]
-            Simulated daily returns for each asset
-            Shape: {asset_name: (n_simulations, n_days)}
+        dict
+            Dictionary with keys:
+            - 'returns': Dict[str, np.ndarray] - Simulated daily returns for each asset
+              Shape: {asset_name: (n_simulations, n_days)}
+            - 'market_regimes': np.ndarray - Market regime assignments
+              Shape: (n_simulations, n_days)
+            - 'asset_regimes': Dict[str, np.ndarray] - Asset regime assignments
+              Shape: {asset_name: (n_simulations, n_days)}
         
         Notes
         -----
@@ -1563,6 +1568,8 @@ class BayesianForwardSimulator:
         
         # Initialize output
         simulated_returns = {asset: np.zeros((n_simulations, n_days)) for asset in asset_names}
+        simulated_market_regimes = np.zeros((n_simulations, n_days), dtype=int)
+        simulated_asset_regimes = {asset: np.zeros((n_simulations, n_days), dtype=int) for asset in asset_names}
         
         # Pre-compute Cholesky decompositions for correlation matrices
         cholesky_matrices = {}
@@ -1613,6 +1620,9 @@ class BayesianForwardSimulator:
                 # ================================================================
                 market_regime = np.random.choice(4, p=market_regime_probs_current)
                 
+                # Store market regime
+                simulated_market_regimes[sim_idx, day] = market_regime
+                
                 # ================================================================
                 # STEP 2: Sample asset regimes conditionally on market regime
                 # ================================================================
@@ -1633,6 +1643,10 @@ class BayesianForwardSimulator:
                         combined_probs = combined_probs / combined_probs.sum()
                         
                         asset_regimes[asset_idx] = np.random.choice(4, p=combined_probs)
+                
+                # Store asset regimes
+                for asset_idx, asset in enumerate(asset_names):
+                    simulated_asset_regimes[asset][sim_idx, day] = asset_regimes[asset_idx]
                 
                 # ================================================================
                 # STEP 3: Sample correlated returns using Gaussian copula
@@ -1714,7 +1728,11 @@ class BayesianForwardSimulator:
             for asset in asset_names:
                 print(f"  {asset}: {simulated_returns[asset].shape}")
         
-        return simulated_returns
+        return {
+            'returns': simulated_returns,
+            'market_regimes': simulated_market_regimes,
+            'asset_regimes': simulated_asset_regimes
+        }
     
     @staticmethod
     def _compute_likelihood(return_value: float, dist_params: Dict) -> float:

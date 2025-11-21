@@ -111,6 +111,8 @@ class PortfolioOptimizerInputs:
         self.asset_simulations: Dict[str, pd.DataFrame] = {}
         self.simulators: Dict[str, BayesianForwardSimulator] = {}
         self.kmrf_models: Dict[str, KMRF] = {}
+        self.simulated_market_regimes: Optional[np.ndarray] = None  # Shape: (n_simulations, n_days)
+        self.simulated_asset_regimes: Dict[str, np.ndarray] = {}  # Per-asset, shape: (n_simulations, n_days)
         self.mu: Optional[pd.Series] = None
         self.Sigma: Optional[pd.DataFrame] = None
         self.correlation_matrix: Optional[pd.DataFrame] = None
@@ -1095,6 +1097,309 @@ class PortfolioOptimizerInputs:
         
         return diagnostics
     
+    def validate_copula_simulation(
+        self,
+        market_asset: str = 'SPDR S&P 500 ETF',
+        regime_tolerance: float = 0.15,
+        correlation_tolerance: float = 0.20,
+        min_regime_samples: int = 50,
+        verbose: bool = True
+    ) -> Dict:
+        """
+        Validate copula simulation results against expected properties.
+        
+        This method checks that the simulated returns from the copula preserve:
+        1. Regime-dependent correlations (within each market regime)
+        2. Regime concordance (asset regimes align with market regime)
+        3. Overall correlation structure
+        
+        Uses the ACTUAL regime assignments from the copula simulation (not inferred).
+        Validates across ALL simulations for statistically robust results.
+        
+        Parameters
+        ----------
+        market_asset : str, default='SPDR S&P 500 ETF'
+            Market asset used for regime identification (for reporting only)
+        regime_tolerance : float, default=0.15
+            Acceptable deviation from expected regime correlations (e.g., 0.15 = ±15%)
+        correlation_tolerance : float, default=0.20
+            Acceptable deviation from expected overall correlations
+        min_regime_samples : int, default=50
+            Minimum (simulation, day) pairs needed per regime for validation
+        verbose : bool, default=True
+            Print validation results
+            
+        Returns
+        -------
+        dict
+            Validation results with keys:
+            - 'regime_correlations': Per-regime correlation comparison
+            - 'regime_concordance': Concordance validation
+            - 'overall_correlations': Overall correlation comparison
+            - 'summary': Overall validation summary
+            
+        Notes
+        -----
+        This should be called after simulate_all_assets(use_copula=True).
+        Requires that regime_correlations and regime_concordance have been estimated.
+        """
+        # Check prerequisites
+        if not self.asset_simulations:
+            raise ValueError("Must call simulate_all_assets() first")
+        
+        if self.regime_correlations is None:
+            raise ValueError("Must call estimate_regime_correlations() first")
+        
+        if self.regime_concordance is None:
+            raise ValueError("Must call estimate_regime_concordance() first")
+        
+        if self.simulated_market_regimes is None:
+            raise ValueError("Regime information not available - simulation may not have used copula method")
+        
+        results = {
+            'regime_correlations': {},
+            'regime_concordance': {},
+            'overall_correlations': {},
+            'summary': {}
+        }
+        
+        regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("COPULA SIMULATION VALIDATION")
+            print("="*80)
+            print(f"Using actual regime assignments from {self.n_simulations:,} simulations")
+            print(f"Validation across ALL simulations (not just one path)")
+        
+        # =====================================================================
+        # STEP 1: Validate regime-dependent correlations
+        # =====================================================================
+        if verbose:
+            print(f"\nStep 1: Validating regime-dependent correlations...")
+            print(f"  Minimum samples per regime: {min_regime_samples}")
+        
+        for regime_id in range(4):
+            # Find all (simulation, day) pairs where market was in this regime
+            regime_mask = self.simulated_market_regimes == regime_id
+            n_samples = regime_mask.sum()
+            
+            if n_samples < min_regime_samples:
+                if verbose:
+                    print(f"  ⚠️  Regime {regime_id} ({regime_names[regime_id]}): "
+                          f"Insufficient samples ({n_samples} < {min_regime_samples})")
+                continue
+            
+            # Extract returns for this regime across all assets
+            regime_returns_dict = {}
+            for asset_name in self.asset_names:
+                asset_sim = self.asset_simulations[asset_name].values.T  # Shape: (n_sim, n_days)
+                # Flatten and extract only regime days
+                regime_returns = asset_sim[regime_mask]
+                regime_returns_dict[asset_name] = regime_returns
+            
+            # Compute empirical correlation from all regime samples
+            regime_returns_df = pd.DataFrame(regime_returns_dict)
+            empirical_corr = regime_returns_df.corr()
+            
+            # Compare with expected correlation
+            expected_corr = self.regime_correlations[regime_id]
+            
+            # Compute differences (exclude diagonal)
+            corr_diff = np.abs(empirical_corr.values - expected_corr.values)
+            n = len(self.asset_names)
+            off_diag_mask = ~np.eye(n, dtype=bool)
+            mean_diff = corr_diff[off_diag_mask].mean()
+            max_diff = corr_diff[off_diag_mask].max()
+            
+            # Check if within tolerance
+            is_valid = mean_diff < regime_tolerance
+            
+            results['regime_correlations'][regime_id] = {
+                'regime_name': regime_names[regime_id],
+                'n_samples': n_samples,
+                'mean_absolute_diff': mean_diff,
+                'max_absolute_diff': max_diff,
+                'is_valid': is_valid,
+                'empirical_corr': empirical_corr,
+                'expected_corr': expected_corr
+            }
+            
+            if verbose:
+                status = "✓" if is_valid else "⚠️"
+                print(f"  {status} Regime {regime_id} ({regime_names[regime_id]}): "
+                      f"Mean diff = {mean_diff:.3f}, Max diff = {max_diff:.3f}, "
+                      f"n = {n_samples:,}")
+        
+        # =====================================================================
+        # STEP 2: Validate regime concordance
+        # =====================================================================
+        if verbose:
+            print(f"\nStep 2: Validating regime concordance...")
+        
+        for asset_name in self.asset_names:
+            if asset_name not in self.simulated_asset_regimes:
+                continue
+            
+            # Get simulated asset regimes
+            asset_regimes = self.simulated_asset_regimes[asset_name]  # (n_sim, n_days)
+            market_regimes = self.simulated_market_regimes  # (n_sim, n_days)
+            
+            # Compute empirical concordance matrix
+            empirical_concordance = np.zeros((4, 4))
+            for market_regime in range(4):
+                market_mask = market_regimes == market_regime
+                n_market = market_mask.sum()
+                
+                if n_market > 0:
+                    for asset_regime in range(4):
+                        # Count (market_regime, asset_regime) pairs
+                        both_mask = market_mask & (asset_regimes == asset_regime)
+                        empirical_concordance[market_regime, asset_regime] = both_mask.sum() / n_market
+            
+            # Compare with expected concordance
+            expected_concordance = self.regime_concordance[asset_name]
+            
+            # Compute differences
+            concordance_diff = np.abs(empirical_concordance - expected_concordance)
+            mean_diff = concordance_diff.mean()
+            max_diff = concordance_diff.max()
+            
+            # Check diagonal concordance (should be stronger)
+            empirical_diag = np.diag(empirical_concordance).mean()
+            expected_diag = np.diag(expected_concordance).mean()
+            
+            is_valid = mean_diff < regime_tolerance
+            
+            results['regime_concordance'][asset_name] = {
+                'mean_absolute_diff': mean_diff,
+                'max_absolute_diff': max_diff,
+                'empirical_avg_diagonal': empirical_diag,
+                'expected_avg_diagonal': expected_diag,
+                'is_valid': is_valid,
+                'empirical_concordance': empirical_concordance,
+                'expected_concordance': expected_concordance
+            }
+            
+            if verbose:
+                status = "✓" if is_valid else "⚠️"
+                print(f"  {status} {asset_name}: Mean diff = {mean_diff:.3f}, "
+                      f"Empirical diag = {empirical_diag:.3f}, Expected diag = {expected_diag:.3f}")
+        
+        # =====================================================================
+        # STEP 3: Validate overall correlations
+        # =====================================================================
+        if verbose:
+            print(f"\nStep 3: Validating overall correlation structure...")
+        
+        # Compute empirical correlations across ALL simulations and days
+        all_returns = {}
+        for asset_name in self.asset_names:
+            # Flatten: (n_sim * n_days) vector
+            all_returns[asset_name] = self.asset_simulations[asset_name].values.T.flatten()
+        
+        empirical_overall_corr = pd.DataFrame(all_returns).corr()
+        
+        # Expected overall correlation (weighted average across regimes)
+        regime_frequencies = {}
+        for regime_id in range(4):
+            regime_frequencies[regime_id] = (self.simulated_market_regimes == regime_id).mean()
+        
+        expected_overall_corr = np.zeros((len(self.asset_names), len(self.asset_names)))
+        for regime_id, freq in regime_frequencies.items():
+            if regime_id in self.regime_correlations:
+                expected_overall_corr += freq * self.regime_correlations[regime_id].values
+        
+        expected_overall_corr_df = pd.DataFrame(
+            expected_overall_corr,
+            index=self.asset_names,
+            columns=self.asset_names
+        )
+        
+        # Compute differences
+        overall_corr_diff = np.abs(empirical_overall_corr.values - expected_overall_corr)
+        n = len(self.asset_names)
+        off_diag_mask = ~np.eye(n, dtype=bool)
+        mean_overall_diff = overall_corr_diff[off_diag_mask].mean()
+        max_overall_diff = overall_corr_diff[off_diag_mask].max()
+        
+        is_overall_valid = mean_overall_diff < correlation_tolerance
+        
+        results['overall_correlations'] = {
+            'mean_absolute_diff': mean_overall_diff,
+            'max_absolute_diff': max_overall_diff,
+            'is_valid': is_overall_valid,
+            'empirical_corr': empirical_overall_corr,
+            'expected_corr': expected_overall_corr_df,
+            'regime_frequencies': regime_frequencies
+        }
+        
+        if verbose:
+            status = "✓" if is_overall_valid else "⚠️"
+            print(f"  {status} Overall Correlations: Mean diff = {mean_overall_diff:.3f}, "
+                  f"Max diff = {max_overall_diff:.3f}")
+            print(f"\n  Regime Frequencies in Simulations:")
+            for regime_id, freq in regime_frequencies.items():
+                print(f"    {regime_names[regime_id]}: {freq:.1%}")
+        
+        # =====================================================================
+        # STEP 4: Summary
+        # =====================================================================
+        n_valid_regimes = sum(1 for r in results['regime_correlations'].values() if r['is_valid'])
+        n_total_regimes = len(results['regime_correlations'])
+        
+        n_valid_concordance = sum(1 for r in results['regime_concordance'].values() if r['is_valid'])
+        n_total_concordance = len(results['regime_concordance'])
+        
+        all_valid = (
+            (n_valid_regimes == n_total_regimes if n_total_regimes > 0 else True) and
+            (n_valid_concordance == n_total_concordance if n_total_concordance > 0 else True) and
+            is_overall_valid
+        )
+        
+        results['summary'] = {
+            'all_valid': all_valid,
+            'n_valid_regime_correlations': n_valid_regimes,
+            'n_total_regime_correlations': n_total_regimes,
+            'n_valid_concordance': n_valid_concordance,
+            'n_total_concordance': n_total_concordance,
+            'overall_correlation_valid': is_overall_valid,
+            'mean_regime_correlation_diff': np.mean([
+                r['mean_absolute_diff'] for r in results['regime_correlations'].values()
+            ]) if results['regime_correlations'] else np.nan,
+            'mean_concordance_diff': np.mean([
+                r['mean_absolute_diff'] for r in results['regime_concordance'].values()
+            ]) if results['regime_concordance'] else np.nan,
+            'mean_overall_correlation_diff': mean_overall_diff
+        }
+        
+        if verbose:
+            print("\n" + "="*80)
+            print("VALIDATION SUMMARY")
+            print("="*80)
+            print(f"Regime Correlations: {n_valid_regimes}/{n_total_regimes} valid")
+            print(f"Regime Concordance: {n_valid_concordance}/{n_total_concordance} valid")
+            print(f"Overall Correlations: {'Valid ✓' if is_overall_valid else 'Invalid ⚠️'}")
+            print(f"\nOverall Assessment: {'PASS ✓' if all_valid else 'FAIL ⚠️'}")
+            
+            if not all_valid:
+                print("\nIssues detected:")
+                if n_valid_regimes < n_total_regimes:
+                    print(f"  - {n_total_regimes - n_valid_regimes} regime(s) have correlation mismatches")
+                if n_valid_concordance < n_total_concordance:
+                    print(f"  - {n_total_concordance - n_valid_concordance} asset(s) have concordance mismatches")
+                if not is_overall_valid:
+                    print(f"  - Overall correlation structure deviates by {mean_overall_diff:.1%}")
+            else:
+                print("\n✓ Copula simulation successfully preserves:")
+                print("  - Regime-dependent correlation structure")
+                print("  - Regime concordance patterns")
+                print("  - Overall correlation structure")
+            
+            print("="*80)
+        
+        return results
+    
     def plot_regime_correlations(
         self,
         figsize: Tuple[int, int] = (16, 12),
@@ -1385,28 +1690,35 @@ class PortfolioOptimizerInputs:
             kmrf = self._train_kmrf_from_kama_msr(kama_msr, asset_name, verbose=verbose)
         else:
             # Load pre-trained KMRF using asset_class_override if provided
-            kmrf_model_dir = self.models_base_path / 'KMRF_new' / 'original' / asset_class_to_use / self.end_date
+            # KMRF models are stored at asset class level (no date folder) to avoid data leakage
+            kmrf_model_dir = self.models_base_path / 'KMRF_new' / 'original' / asset_class_to_use
             
-            # Try exact match first
+            # Try multiple filename patterns
+            # Pattern 1: Exact match (e.g., "Energy Select Sector SPDR.pkl")
             exact_filename = f"{asset_name}.pkl"
             kmrf_path = kmrf_model_dir / exact_filename
             
             if not kmrf_path.exists():
-                # For universe asset class, use glob to find ticker-prefixed file
-                pattern = f"*{asset_name}.pkl"
-                matching_files = list(kmrf_model_dir.glob(pattern))
+                # Pattern 2: With suffix (e.g., "Energy Select Sector SPDR_KMRF_model.pkl")
+                suffix_filename = f"{asset_name}_KMRF_model.pkl"
+                kmrf_path = kmrf_model_dir / suffix_filename
                 
-                if len(matching_files) == 1:
-                    kmrf_path = matching_files[0]
-                elif len(matching_files) > 1:
-                    raise ValueError(
-                        f"Multiple KMRF model files found for {asset_name} in {asset_class_to_use}: "
-                        f"{[f.name for f in matching_files]}"
-                    )
-                else:
-                    raise FileNotFoundError(
-                        f"KMRF model not found for {asset_name} in asset class '{asset_class_to_use}': {kmrf_model_dir}"
-                    )
+                if not kmrf_path.exists():
+                    # Pattern 3: Use glob to find any file containing the asset name
+                    pattern = f"{asset_name}*.pkl"
+                    matching_files = list(kmrf_model_dir.glob(pattern))
+                    
+                    if len(matching_files) == 1:
+                        kmrf_path = matching_files[0]
+                    elif len(matching_files) > 1:
+                        raise ValueError(
+                            f"Multiple KMRF model files found for {asset_name} in {asset_class_to_use}: "
+                            f"{[f.name for f in matching_files]}"
+                        )
+                    else:
+                        raise FileNotFoundError(
+                            f"KMRF model not found for {asset_name} in asset class '{asset_class_to_use}': {kmrf_model_dir}"
+                        )
             
             # Load KMRF (suppress output)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1731,7 +2043,7 @@ class PortfolioOptimizerInputs:
         if verbose:
             print(f"\n[Step 5/5] Running Gaussian copula simulation...")
         
-        simulated_returns = BayesianForwardSimulator.simulate_multiasset_copula(
+        simulation_results = BayesianForwardSimulator.simulate_multiasset_copula(
             assets_forward_probs=assets_forward_probs,
             assets_regime_distributions=assets_regime_distributions,
             regime_correlations=regime_correlations,
@@ -1743,6 +2055,11 @@ class PortfolioOptimizerInputs:
             random_seed=self.random_seed,
             verbose=verbose
         )
+        
+        # Unpack results
+        simulated_returns = simulation_results['returns']
+        self.simulated_market_regimes = simulation_results['market_regimes']
+        self.simulated_asset_regimes = simulation_results['asset_regimes']
         
         # Convert numpy arrays to DataFrames for compatibility with downstream code
         for asset_name, returns_array in simulated_returns.items():
