@@ -51,6 +51,11 @@ class BayesianForwardSimulator:
         Confidence weight on KMRF likelihood vs HMM prior (0=HMM only, 1=KMRF only)
     significance_level : float, default=0.05
         Significance level for distribution selection hypothesis tests
+    start_date : str, optional
+        Date to start simulation from (YYYYMMDD format). If provided, overrides
+        the KAMA-MSR model's last training date. This is critical when using
+        nearest model strategy - the model may be trained up to an earlier date,
+        but we want to simulate forward from the actual rebalance date.
     
     Attributes
     ----------
@@ -70,13 +75,15 @@ class BayesianForwardSimulator:
         kmrf: KMRF,
         n_days: int = 21,
         alpha_confidence: float = 1.0,
-        significance_level: float = 0.05
+        significance_level: float = 0.05,
+        start_date: Optional[str] = None
     ):
         self.kama_msr = kama_msr
         self.kmrf = kmrf
         self.n_days = n_days
         self.alpha = alpha_confidence
         self.sig_level = significance_level
+        self.start_date = start_date  # Override KAMA-MSR end date if provided
         
         # Storage for predictions and diagnostics
         self.all_oos_predictions = None
@@ -135,8 +142,11 @@ class BayesianForwardSimulator:
             steady_state /= steady_state.sum()
             
             # Get KMRF likelihood at t+1
-            # Get the current date from KAMA_MSR and find the next trading day
-            current_date = self.kama_msr.regime_labels.index[-1]
+            # Use start_date if provided (for nearest model strategy), otherwise use KAMA-MSR end date
+            if self.start_date is not None:
+                current_date = pd.Timestamp(self.start_date)
+            else:
+                current_date = self.kama_msr.regime_labels.index[-1]
             
             # Get all out-of-sample predictions from KMRF
             all_oos_predictions = self.kmrf.predict_all_oos()
@@ -151,12 +161,12 @@ class BayesianForwardSimulator:
             
             next_trading_day = future_dates[0]
             kmrf_likelihood_t1 = all_oos_predictions.loc[next_trading_day]\
-                .reset_index(drop=True).rename('')
+                .reset_index(drop=True)
             
             # HMM prior: P(regime_t+1 | regime_t)
+            # TODO: This should involve current regime duration
             prior_t1 = P.loc[self.kama_msr.regime_labels.iloc[-1]]\
-                .reset_index(drop=True).rename('')
-            
+                .reset_index(drop=True)
             # Bayesian posterior at t+1
             unnormalized = prior_t1.pow(1 - self.alpha).multiply(
                 kmrf_likelihood_t1.pow(self.alpha)
@@ -178,7 +188,11 @@ class BayesianForwardSimulator:
         
         # Create DataFrame with proper index
         # Handle case where fewer than n_days are available
-        day_t = self.kama_msr.regime_labels.index[-1].strftime('%Y-%m-%d')
+        # Use current_date (may be overridden by start_date parameter)
+        if self.start_date is not None:
+            day_t = pd.Timestamp(self.start_date).strftime('%Y-%m-%d')
+        else:
+            day_t = self.kama_msr.regime_labels.index[-1].strftime('%Y-%m-%d')
         available_dates = self.kmrf.raw_ohlc.loc[day_t:][1:].index
         actual_days = min(self.n_days, len(available_dates))
         
@@ -484,8 +498,6 @@ class BayesianForwardSimulator:
         Performs:
         - Parameter validity checks
         - Kolmogorov-Smirnov test
-        - Anderson-Darling test
-        - Chi-square test
         - Q-Q plot correlation
         
         Parameters
@@ -540,30 +552,6 @@ class BayesianForwardSimulator:
                 # Kolmogorov-Smirnov test
                 ks_stat, ks_pval = stats.kstest(returns, dist_obj.cdf)
                 
-                # Anderson-Darling test (for normal only)
-                if dist_type == 'normal':
-                    ad_result = stats.anderson(returns, dist='norm')
-                    ad_stat = ad_result.statistic
-                    # Use 5% critical value
-                    ad_pval = 0.05 if ad_stat < ad_result.critical_values[2] else 0.01
-                else:
-                    ad_stat = np.nan
-                    ad_pval = np.nan
-                
-                # Chi-square test
-                observed, bin_edges = np.histogram(returns, bins=min(10, len(returns)//5))
-                expected = np.diff(dist_obj.cdf(bin_edges)) * len(returns)
-                # Remove bins with expected < 5
-                mask = expected >= 5
-                if mask.sum() > 1:
-                    # Normalize to ensure sums match (handle numerical precision)
-                    obs_masked = observed[mask]
-                    exp_masked = expected[mask]
-                    exp_masked = exp_masked * (obs_masked.sum() / exp_masked.sum())  # Rescale
-                    chi2_stat, chi2_pval = stats.chisquare(obs_masked, exp_masked)
-                else:
-                    chi2_stat, chi2_pval = np.nan, np.nan
-                
                 # Q-Q plot correlation
                 theoretical_quantiles = dist_obj.ppf(np.linspace(0.01, 0.99, len(returns)))
                 empirical_quantiles = np.sort(returns)
@@ -571,8 +559,6 @@ class BayesianForwardSimulator:
                 
             else:
                 ks_stat, ks_pval = np.nan, np.nan
-                ad_stat, ad_pval = np.nan, np.nan
-                chi2_stat, chi2_pval = np.nan, np.nan
                 qq_corr = np.nan
             
             validation.append({
@@ -582,10 +568,6 @@ class BayesianForwardSimulator:
                 'valid': valid,
                 'KS_stat': ks_stat,
                 'KS_pval': ks_pval,
-                'AD_stat': ad_stat,
-                'AD_pval': ad_pval,
-                'Chi2_stat': chi2_stat,
-                'Chi2_pval': chi2_pval,
                 'QQ_corr': qq_corr,
                 'loc': params.get('loc'),
                 'scale': params.get('scale'),
@@ -601,12 +583,12 @@ class BayesianForwardSimulator:
             print("\nParameter Validity & Sample Size:")
             print(df[['regime', 'distribution', 'n_obs', 'valid']].to_string(index=False))
             
-            print("\nGoodness-of-Fit Tests (p-values):")
-            print(df[['regime', 'KS_pval', 'AD_pval', 'Chi2_pval', 'QQ_corr']].to_string(index=False))
+            print("\nGoodness-of-Fit Tests:")
+            print(df[['regime', 'KS_pval', 'QQ_corr']].to_string(index=False))
             
             print("\nInterpretation:")
-            print("  - p-value > 0.05: Distribution fits well (cannot reject)")
-            print("  - p-value < 0.05: Distribution may not fit well (reject)")
+            print("  - KS p-value > 0.05: Distribution fits well (cannot reject)")
+            print("  - KS p-value < 0.05: Distribution may not fit well (reject)")
             print("  - QQ_corr > 0.95: Excellent fit")
             print("  - QQ_corr > 0.90: Good fit")
             

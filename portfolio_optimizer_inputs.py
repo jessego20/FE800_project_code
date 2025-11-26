@@ -83,7 +83,9 @@ class PortfolioOptimizerInputs:
         random_seed: int = 1010,
         retrain_kmrf: bool = True,
         use_boruta_selection: bool = False,
-        use_consensus_selection: bool = False
+        use_consensus_selection: bool = False,
+        use_nearest_model: bool = False,
+        model_date: Optional[str] = None
     ):
         self.asset_names = asset_names
         self.asset_class = asset_class
@@ -98,6 +100,9 @@ class PortfolioOptimizerInputs:
         self.retrain_kmrf = retrain_kmrf
         self.use_boruta_selection = use_boruta_selection
         self.use_consensus_selection = use_consensus_selection
+        self.use_nearest_model = use_nearest_model
+        self._model_date_override = model_date  # User-specified model date
+        self.model_date = None  # Will be set in _validate_setup()
         
         # Phase 2: Market regime attributes
         # Always use S&P 500 as market regime indicator
@@ -179,14 +184,91 @@ class PortfolioOptimizerInputs:
         """Return True if n_days was adjusted due to data availability."""
         return self.n_days != self.n_days_requested
     
+    def _find_nearest_model_date(self, target_date: str, asset_class: str) -> str:
+        """
+        Find the most recent KAMA-MSR model date that is <= target_date.
+        
+        For daily/frequent rebalancing, this allows using the most recent
+        monthly trained model rather than requiring exact date match.
+        
+        Parameters
+        ----------
+        target_date : str
+            Target date in YYYYMMDD format
+        asset_class : str
+            Asset class to search models for
+            
+        Returns
+        -------
+        str
+            Date string (YYYYMMDD format) of nearest available model
+            
+        Raises
+        ------
+        FileNotFoundError
+            If no KAMA-MSR models exist for asset class
+        ValueError
+            If no model exists before target_date
+        """
+        kama_msr_base = self.models_base_path / 'KAMA_MSR' / asset_class
+        
+        if not kama_msr_base.exists():
+            raise FileNotFoundError(
+                f"No KAMA-MSR models found for asset class '{asset_class}': {kama_msr_base}"
+            )
+        
+        # Get all available model dates
+        available_dates = [
+            d.name for d in kama_msr_base.iterdir() 
+            if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+        ]
+        
+        if not available_dates:
+            raise FileNotFoundError(
+                f"No dated model folders found in {kama_msr_base}"
+            )
+        
+        # Sort dates and find most recent <= target_date
+        available_dates.sort()
+        target_ts = pd.Timestamp(target_date)
+        
+        # Find nearest past model
+        nearest_date = None
+        for date_str in reversed(available_dates):
+            if pd.Timestamp(date_str) <= target_ts:
+                nearest_date = date_str
+                break
+        
+        if nearest_date is None:
+            raise ValueError(
+                f"No KAMA-MSR model found before {target_date} for asset class '{asset_class}'. "
+                f"Earliest available: {available_dates[0]}"
+            )
+        
+        return nearest_date
+    
     def _validate_setup(self):
-        """Validate that base paths exist."""
+        """Validate that base paths exist and determine model date to use."""
         if not self.models_base_path.exists():
             raise FileNotFoundError(
                 f"Models base path does not exist: {self.models_base_path}"
             )
         
-        kama_msr_path = self.models_base_path / 'KAMA_MSR' / self.asset_class / self.end_date
+        # Determine which model date to use
+        if self._model_date_override:
+            # User explicitly specified a model date
+            self.model_date = self._model_date_override
+            print(f"Using user-specified model date: {self.model_date} for rebalance date: {self.end_date}")
+        elif self.use_nearest_model:
+            # Find nearest available model
+            self.model_date = self._find_nearest_model_date(self.end_date, self.asset_class)
+            days_stale = (pd.Timestamp(self.end_date) - pd.Timestamp(self.model_date)).days
+            print(f"Using nearest model date: {self.model_date} for rebalance date: {self.end_date} ({days_stale} days stale)")
+        else:
+            # Require exact match (default behavior)
+            self.model_date = self.end_date
+        
+        kama_msr_path = self.models_base_path / 'KAMA_MSR' / self.asset_class / self.model_date
         if not kama_msr_path.exists():
             raise FileNotFoundError(
                 f"KAMA_MSR path does not exist: {kama_msr_path}"
@@ -615,7 +697,10 @@ class PortfolioOptimizerInputs:
         """
         # For universe asset class, files are named: "{ticker} - {asset_name}_KAMA-MSR_4-regimes.pkl"
         # For other asset classes (us_equity, etc), files are: "{asset_name}_KAMA-MSR_4-regimes.pkl"
-        model_dir = self.models_base_path / 'KAMA_MSR' / asset_class / self.end_date
+        
+        # Use model_date (already resolved by _validate_setup) instead of end_date
+        # This ensures we use the nearest available model when use_nearest_model=True
+        model_dir = self.models_base_path / 'KAMA_MSR' / asset_class / self.model_date
         
         # Try exact match first (for us_equity, us_treasury, etc.)
         exact_filename = f"{asset_name}_KAMA-MSR_4-regimes.pkl"
@@ -1650,8 +1735,16 @@ class PortfolioOptimizerInputs:
         # Use override if provided, otherwise use instance asset_class
         asset_class_to_use = asset_class_override if asset_class_override is not None else self.asset_class
         
-        # Build path using the appropriate asset class
-        model_dir = self.models_base_path / 'KAMA_MSR' / asset_class_to_use / self.end_date
+        # Determine model date for this asset class
+        if asset_class_override and self.use_nearest_model:
+            # For market asset with different class, find nearest model in that class
+            model_date_to_use = self._find_nearest_model_date(self.end_date, asset_class_to_use)
+        else:
+            # Use the instance's model_date (already resolved in _validate_setup)
+            model_date_to_use = self.model_date
+        
+        # Build path using the appropriate asset class and model date
+        model_dir = self.models_base_path / 'KAMA_MSR' / asset_class_to_use / model_date_to_use
         
         # Try exact match first
         exact_filename = f"{asset_name}_KAMA-MSR_4-regimes.pkl"
@@ -1805,12 +1898,14 @@ class PortfolioOptimizerInputs:
         kama_msr, kmrf = self.load_models(asset_name, kmrf=True)
         
         # Create simulator
+        # Pass end_date as start_date so simulation starts from rebalance date, not model training end
         simulator = BayesianForwardSimulator(
             kama_msr=kama_msr,
             kmrf=kmrf,
             n_days=self.n_days,
             alpha_confidence=self.alpha,
-            significance_level=self.sig_level
+            significance_level=self.sig_level,
+            start_date=self.end_date  # Use rebalance date, not model training date
         )
         
         # Run simulation
@@ -1960,7 +2055,8 @@ class PortfolioOptimizerInputs:
                     kmrf=kmrf,
                     n_days=self.n_days,
                     alpha_confidence=self.alpha,
-                    significance_level=self.sig_level
+                    significance_level=self.sig_level,
+                    start_date=self.end_date  # Use rebalance date, not model training date
                 )
                 
                 # Compute forward probabilities and fit distributions
@@ -2025,7 +2121,8 @@ class PortfolioOptimizerInputs:
                             kmrf=kmrf_market,
                             n_days=self.n_days,
                             alpha_confidence=self.alpha,
-                            significance_level=self.sig_level
+                            significance_level=self.sig_level,
+                            start_date=self.end_date  # Use rebalance date, not model training date
                         )
                         
                         # Compute forward probabilities and fit distributions
@@ -2072,7 +2169,8 @@ class PortfolioOptimizerInputs:
                         kmrf=kmrf_market,
                         n_days=self.n_days,
                         alpha_confidence=self.alpha,
-                        significance_level=self.sig_level
+                        significance_level=self.sig_level,
+                        start_date=self.end_date  # Use rebalance date, not model training date
                     )
                     
                     # Compute forward probabilities and fit distributions
