@@ -875,8 +875,10 @@ class PortfolioOptimizer:
             for asset_name, simulator in portfolio_inputs.simulators.items():
                 if hasattr(simulator, 'kmrf') and simulator.kmrf is not None:
                     raw_ohlc[asset_name] = simulator.kmrf.raw_ohlc
-                    if opt_date is None:
-                        opt_date = simulator.kama_msr.returns.index[-1]
+        
+        # Use the actual rebalance date (end_date), not the model training date
+        # This is critical when using nearest model strategy
+        opt_date = pd.Timestamp(portfolio_inputs.end_date) if portfolio_inputs.end_date else None
         
         return cls(
             mu=mu,
