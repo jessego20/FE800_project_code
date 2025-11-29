@@ -1299,42 +1299,77 @@ class KAMA_MSR:
         
         return analyze_regime_durations(self.regime_labels)
 
-    def plot_regimes(self, figsize=(16, 8), data_name: str = "Asset"):
-        """Plot prices, KAMA, filter, and regime classification"""
+    def plot_regimes(self, figsize=(16, 8), data_name: str = "Asset",
+                     start_date: Optional[str] = None, end_date: Optional[str] = None):
+        """
+        Plot prices, KAMA, filter, and regime classification.
+        
+        Parameters:
+        -----------
+        figsize : tuple, default=(16, 8)
+            Figure size
+        data_name : str, default="Asset"
+            Name of the asset for plot titles
+        start_date : str, optional
+            Start date for the plot (format: 'YYYY-MM-DD' or 'YYYYMMDD')
+            If None, uses the earliest available date
+        end_date : str, optional
+            End date for the plot (format: 'YYYY-MM-DD' or 'YYYYMMDD')
+            If None, uses the latest available date
+        """
         if self.regime_labels is None:
             raise ValueError("Model not fitted. Call fit() first.")
         
         regime_labels_clean = self.regime_labels.dropna()
         
+        # Apply date filtering
+        prices_plot = self.prices.copy()
+        kama_plot = self.kama_values.copy()
+        regime_labels_plot = regime_labels_clean.copy()
+        
+        if start_date is not None:
+            start_date = pd.to_datetime(start_date)
+            prices_plot = prices_plot[prices_plot.index >= start_date]
+            kama_plot = kama_plot[kama_plot.index >= start_date]
+            regime_labels_plot = regime_labels_plot[regime_labels_plot.index >= start_date]
+        
+        if end_date is not None:
+            end_date = pd.to_datetime(end_date)
+            prices_plot = prices_plot[prices_plot.index <= end_date]
+            kama_plot = kama_plot[kama_plot.index <= end_date]
+            regime_labels_plot = regime_labels_plot[regime_labels_plot.index <= end_date]
+        
         fig, axes = plt.subplots(2, 1, figsize=figsize, gridspec_kw={'height_ratios': [2, 1]})
         
         if self.use_three_state_msr:
-            colors = {0: 'green', 1: 'blue', 2: 'yellow',
+            colors = {0: 'green', 1: 'royalblue', 2: 'gold',
                          3: 'orange', 4: 'purple', 5: 'red'}
             regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'MV Bull',
                            3: 'MV Bear', 4: 'HV Bull', 5: 'HV Bear'}
         else:
-            colors = {0: 'green', 1: 'yellow', 2: 'orange', 3: 'darkred'}
+            colors = {0: 'green', 1: 'royalblue', 2: 'orange', 3: 'darkred'}
             regime_names = {0: 'LV Bull', 1: 'LV Bear', 2: 'HV Bull', 3: 'HV Bear'}
         
         # Plot 1: Price and KAMA
         ax1 = axes[0]
-        ax1.plot(self.prices.index, self.prices, label='Price', 
+        ax1.plot(prices_plot.index, prices_plot, label='Price', 
                 color='black', alpha=0.7, linewidth=1)
-        ax1.plot(self.kama_values.index, self.kama_values, 
+        ax1.plot(kama_plot.index, kama_plot, 
                 label='KAMA', color='blue', linewidth=2)
         
         for regime in range(self.n_combined_regimes):
-            mask = (regime_labels_clean == regime)
+            mask = (regime_labels_plot == regime)
             if mask.any():
-                mask_aligned = pd.Series(False, index=self.prices.index)
-                mask_aligned.loc[regime_labels_clean.index[mask]] = True
+                mask_aligned = pd.Series(False, index=prices_plot.index)
+                mask_aligned.loc[regime_labels_plot.index[mask]] = True
                 
-                ax1.fill_between(self.prices.index, self.prices.min(), self.prices.max(),
+                ax1.fill_between(prices_plot.index, prices_plot.min(), prices_plot.max(),
                                where=mask_aligned.values, alpha=0.2, color=colors[regime],
                                label=regime_names[regime])
 
-        ax1.set_title(f'{data_name}: Price and KAMA with Regime Classification')
+        # Add date range to title
+        date_range_str = f" ({prices_plot.index[0].strftime('%Y-%m-%d')} to {prices_plot.index[-1].strftime('%Y-%m-%d')})"
+        ax1.set_title(f'{data_name}: Price and KAMA with Regime Classification{date_range_str}')
         ax1.set_ylabel('Price')
         ax1.legend(loc='best', ncol=2)
         ax1.grid(True, alpha=0.3)
@@ -1342,9 +1377,9 @@ class KAMA_MSR:
         # Plot 2: Regime Classification
         ax4 = axes[1]
         for regime in range(self.n_combined_regimes):
-            mask = (regime_labels_clean == regime)
+            mask = (regime_labels_plot == regime)
             if mask.any():
-                ax4.scatter(regime_labels_clean.index[mask], regime_labels_clean[mask],
+                ax4.scatter(regime_labels_plot.index[mask], regime_labels_plot[mask],
                            c=colors[regime], label=regime_names[regime], alpha=0.6, s=10)
         
         ax4.set_title(f'{data_name}: {"Six" if self.use_three_state_msr else "Four"}-Regime Classification')

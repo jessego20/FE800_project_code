@@ -230,6 +230,10 @@ class KMRF:
         self._label_mapping: Optional[Dict] = None
         self._inverse_label_mapping: Optional[Dict] = None
         
+        # Multi-horizon prediction models (separate XGBoost model for each horizon)
+        self.horizon_models_: Optional[Dict[int, object]] = None  # {horizon: XGBClassifier}
+        self.max_horizon_: Optional[int] = None
+        
         print(f"KMRF model initialized")
         print(f"  Asset: {self.asset_name}")
         print(f"  Asset class: {self.asset_class}")
@@ -285,6 +289,7 @@ class KMRF:
                 'BIL': 'SPDR Bloomberg 1-3 Month T-Bill ETF',
                 'SHY': 'iShares 1-3 Year Treasury Bond ETF',
                 'IEF': 'iShares 7-10 Year Treasury Bond ETF',
+
                 # MAJOR INDICES
                 '^GSPC': 'S&P 500',
                 '^IXIC': 'Nasdaq Composite',
@@ -293,6 +298,13 @@ class KMRF:
                 '^DJI': 'Dow Jones Industrial Average',
                 '^RUI': 'Russell 1000',
                 '^RUA': 'Russell 3000',
+
+                # Commodity ETFs
+                'GLD': 'SPDR Gold Shares',
+                'SLV': 'iShares Silver Trust',
+                'USO': 'United States Oil Fund',
+                'UNG': 'United States Natural Gas Fund',
+                'DBA': 'Invesco DB Agriculture',
                 
                 # MAIN BROAD MARKET ETFS
                 'SPY': 'SPDR S&P 500 ETF',
@@ -320,6 +332,9 @@ class KMRF:
                 'XLP': 'Consumer Staples Select Sector SPDR',
                 'XLRE': 'Real Estate Select Sector SPDR',
                 'XLC': 'Communication Services Select Sector SPDR',
+
+                'IYR': 'iShares U.S. Real Estate ETF',
+
                 
                 # GROWTH ETFs
                 'IVW': 'iShares S&P 500 Growth ETF',
@@ -401,6 +416,7 @@ class KMRF:
                 'DBC': 'DBC - Invesco DB Commodity Index Tracking Fund',
                 'GLD': 'GLD - SPDR Gold Shares',
             }
+            
             if self.asset_class == 'universe':
                 raw_price_data = pd.read_csv(BASE_DIR / 'data/processed/universe_etfs.csv', index_col=0, header=[0, 1], parse_dates=True)
                 raw_price_data.index = pd.to_datetime(raw_price_data.index)
@@ -1556,7 +1572,9 @@ class KMRF:
         """
         Calculate validation and test split dates based on end_date and available data.
         
-        The remaining data after end_date is split equally into validation and test sets.
+        The remaining data from end_date onwards is split into validation and test sets.
+        The end_date itself is included in OOS because we want to make predictions
+        using features from end_date (T) to predict T+1, T+2, etc.
         If test_end_date is provided, it defines the end of test set and validation is
         sized to match the test set duration.
         
@@ -1567,12 +1585,13 @@ class KMRF:
         """
         train_end = pd.to_datetime(self.end_date)
         
-        # Get all available dates after training
+        # Get all available dates from train_end onwards (inclusive)
+        # We include train_end because we want to predict using features from that day
         oos_dates = X.index[X.index > train_end]
         
         if len(oos_dates) == 0:
             raise ValueError(
-                f"No out-of-sample data available after end_date {self.end_date}. "
+                f"No out-of-sample data available from end_date {self.end_date}. "
                 f"Data range: {X.index[0]} to {X.index[-1]}"
             )
         
@@ -1669,6 +1688,8 @@ class KMRF:
         print(f"    Test       : {self.test_start.date()} to {self.test_end.date()}")
         
         # Split features by dates FIRST (features have full date range)
+        # Training ends BEFORE validation_start (which is end_date)
+        # This ensures end_date is in OOS, not training
         train_dates_mask = X.index < self.validation_start
         val_mask = (X.index >= self.validation_start) & (X.index <= self.validation_end)
         test_mask = (X.index >= self.test_start) & (X.index <= self.test_end)
@@ -2055,6 +2076,700 @@ class KMRF:
         
         return self
     
+    def fit_multi_horizon(
+        self,
+        X: Optional[pd.DataFrame] = None,
+        y: Optional[pd.Series] = None,
+        max_horizon: int = 21,
+        xgb_params: Optional[Dict] = None,
+        verbose: bool = True
+    ) -> 'KMRF':
+        """
+        Fit separate XGBoost classifiers for each prediction horizon.
+        
+        This method trains a separate XGBoost model for each horizon h = 1, 2, ..., max_horizon.
+        Each model h predicts the regime at day t+h using features from day t.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame, optional
+            Feature matrix. If None, uses X_train from prepare_training_data()
+        y : pd.Series, optional
+            Target labels. If None, uses y_train from prepare_training_data()
+        max_horizon : int, default=21
+            Maximum prediction horizon (number of days forward to predict)
+        xgb_params : dict, optional
+            XGBoost hyperparameters. If provided, overrides instance-level xgb_params.
+        verbose : bool, default=True
+            Print training progress for each horizon
+            
+        Returns
+        -------
+        KMRF
+            Self (for method chaining)
+            
+        Notes
+        -----
+        For each horizon h, the model is trained to predict y[t+h] using X[t].
+        This means samples are shifted such that features at index t are paired
+        with labels at index t+h.
+        
+        The horizon=1 model is stored as self.xgb_model for backward compatibility
+        with the standard predict() method.
+        
+        Examples
+        --------
+        >>> kmrf.fit_multi_horizon(max_horizon=21)
+        >>> # Get predictions for all horizons
+        >>> multi_predictions = kmrf.predict_multi_horizon(horizon=21)
+        """
+        from xgboost import XGBClassifier
+        
+        if X is None or y is None:
+            X = self.X_train
+            y = self.y_train
+        
+        if X is None or y is None:
+            raise ValueError("No training data available. Call prepare_training_data() first.")
+        
+        self.max_horizon_ = max_horizon
+        self.horizon_models_ = {}
+        
+        print(f"\n{'='*80}")
+        print(f"TRAINING MULTI-HORIZON XGBOOST CLASSIFIERS")
+        print(f"{'='*80}")
+        print(f"Max horizon: {max_horizon} days")
+        print(f"Training samples available: {len(X)}")
+        
+        # Merge instance-level and call-level XGB parameters
+        merged_xgb_params = self.xgb_params.copy() if self.xgb_params else {}
+        if xgb_params:
+            merged_xgb_params.update(xgb_params)
+        
+        # Default XGB parameters
+        if self.asset_class == 'commodity':
+            default_params = {
+                'n_estimators': 280,
+                'max_depth': 3,
+                'learning_rate': 0.1,
+                'subsample': 0.8,
+                'colsample_bytree': 0.4,
+                'min_child_weight': 95,
+                'gamma': 0.02,
+                'random_state': self.random_seed,
+                'n_jobs': -1,
+                'tree_method': 'hist',
+                'enable_categorical': False
+            }
+        else:    
+            default_params = {
+                'n_estimators': 220,
+                'max_depth': 13,
+                'learning_rate': 0.1,
+                'subsample': 0.8,
+                'colsample_bytree': 0.25,
+                'min_child_weight': 95,
+                'gamma': 0.045,
+                'random_state': self.random_seed,
+                'n_jobs': -1,
+                'tree_method': 'hist',
+                'enable_categorical': False
+            }
+        
+        default_params.update(merged_xgb_params)
+        
+        if verbose:
+            print(f"\nXGB Parameters:")
+            for key, val in default_params.items():
+                print(f"  {key}: {val}")
+        
+        # Flatten multi-index columns for sklearn
+        X_flat = X.copy()
+        X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
+                          for col in X.columns]
+        
+        y_flat = y.iloc[:, 0] if len(y.shape) > 1 else y
+        
+        # Set up label mapping (same for all horizons)
+        if self.classification_type == 'adapted':
+            self._label_mapping = {-1: 0, 0: 1, 1: 2}
+            self._inverse_label_mapping = {0: -1, 1: 0, 2: 1}
+        else:
+            unique_regimes = sorted(y_flat.dropna().unique())
+            self._label_mapping = {int(regime): idx for idx, regime in enumerate(unique_regimes)}
+            self._inverse_label_mapping = {idx: int(regime) for regime, idx in self._label_mapping.items()}
+        
+        print(f"\nLabel mapping: {self._label_mapping}")
+        print(f"\nTraining models for horizons 1 to {max_horizon}...")
+        
+        for horizon in range(1, max_horizon + 1):
+            # Shift labels forward by horizon days
+            # y_shifted[t] = y[t + horizon] (label at t+horizon for features at t)
+            # features are lagged 1 day already -> fixed horizon offset
+            label_offset = horizon - 1
+            y_shifted = y_flat.shift(-label_offset)
+            
+            # Align features and shifted labels
+            valid_idx = ~(X_flat.isna().any(axis=1) | y_shifted.isna())
+            X_horizon = X_flat[valid_idx]
+            y_horizon = y_shifted[valid_idx]
+            
+            # Map labels for XGBoost
+            y_horizon_mapped = y_horizon.map(self._label_mapping).astype(int)
+            
+            # Train model for this horizon
+            model = XGBClassifier(**default_params)
+            model.fit(X_horizon.values, y_horizon_mapped.values)
+            
+            self.horizon_models_[horizon] = model
+            
+            if verbose and (horizon <= 5 or horizon % 5 == 0 or horizon == max_horizon):
+                print(f"  Horizon {horizon:2d}: {len(X_horizon)} samples")
+        
+        # Store horizon=1 model as self.xgb_model for backward compatibility
+        self.xgb_model = self.horizon_models_[1]
+        
+        print(f"\n{'='*80}")
+        print(f"MULTI-HORIZON TRAINING COMPLETE")
+        print(f"{'='*80}")
+        print(f"Trained {max_horizon} models (horizons 1 to {max_horizon})")
+        print(f"Use predict_multi_horizon() for multi-step predictions")
+        
+        return self
+    
+    def predict_multi_horizon(
+        self,
+        X: Optional[pd.DataFrame] = None,
+        horizon: int = 21,
+        start_idx: Optional[int] = None,
+        test_or_val: str = 'val'
+    ) -> pd.DataFrame:
+        """
+        Generate regime probability predictions for multiple horizons.
+        
+        This method produces predictions for days t+1, t+2, ..., t+horizon using
+        features from day t. Each row in the output corresponds to a different
+        prediction horizon.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame, optional
+            Feature matrix for a single prediction point. If None, uses
+            X_val or X_test based on test_or_val parameter.
+            If X has multiple rows and start_idx is not specified, uses the last row.
+        horizon : int, default=21
+            Number of days forward to predict (must be <= max_horizon_ from training)
+        start_idx : int, optional
+            Index of the row in X to use as the prediction point.
+            If None and X has multiple rows, uses the last row.
+        test_or_val : str, default='val'
+            Whether to use validation or test data if X is None
+            
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with shape (horizon, n_regimes) where:
+            - Rows are indexed by horizon (1, 2, ..., horizon) 
+            - Columns are regime probabilities (e.g., 'P(Bear)', 'P(Other)', 'P(Bull)')
+            
+        Examples
+        --------
+        >>> # Train multi-horizon model
+        >>> kmrf.fit_multi_horizon(max_horizon=21)
+        >>> 
+        >>> # Predict for the next 21 days from validation set
+        >>> predictions = kmrf.predict_multi_horizon(horizon=21)
+        >>> print(predictions.shape)  # (21, 3) for adapted classification
+        >>> 
+        >>> # Predict from a specific date
+        >>> single_day_features = X_val.loc[['2019-01-31']]
+        >>> predictions = kmrf.predict_multi_horizon(X=single_day_features, horizon=21)
+        """
+        if self.horizon_models_ is None:
+            raise ValueError(
+                "Multi-horizon models not trained. Call fit_multi_horizon() first."
+            )
+        
+        if horizon > self.max_horizon_:
+            raise ValueError(
+                f"Requested horizon ({horizon}) exceeds max trained horizon ({self.max_horizon_}). "
+                f"Retrain with fit_multi_horizon(max_horizon={horizon}) or use a smaller horizon."
+            )
+        
+        # Get features
+        if X is None:
+            if test_or_val.lower() == 'test':
+                if self.X_test is None:
+                    raise ValueError("No test data available.")
+                X = self.X_test
+            else:
+                if self.X_val is None:
+                    raise ValueError("No validation data available.")
+                X = self.X_val
+        
+        # Select single row for prediction
+        if len(X) > 1:
+            if start_idx is not None:
+                X_single = X.iloc[[start_idx]]
+            else:
+                X_single = X.iloc[[-1]]  # Use last row
+        else:
+            X_single = X
+        
+        prediction_date = X_single.index[0]
+        
+        # Apply feature selection if needed
+        if self.selected_features is not None and len(self.selected_features) > 0:
+            missing_features = set(self.selected_features) - set(X_single.columns)
+            if not missing_features:
+                X_single = X_single[self.selected_features]
+        
+        # Flatten multi-index columns
+        X_flat = X_single.copy()
+        X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
+                          for col in X_single.columns]
+        
+        # Handle NaN values
+        X_clean = X_flat.fillna(method='ffill').fillna(method='bfill')
+        
+        # Get predictions for each horizon
+        results = []
+        for h in range(1, horizon + 1):
+            model = self.horizon_models_[h]
+            proba = model.predict_proba(X_clean.values)[0]  # Single row -> 1D array
+            results.append(proba)
+        
+        # Build column names based on classification type
+        if self.classification_type == 'adapted':
+            regime_names = {-1: 'P(Bear)', 0: 'P(Other)', 1: 'P(Bull)'}
+            all_columns = [regime_names[i] for i in [-1, 0, 1]]
+        else:
+            regime_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
+            all_columns = [regime_names[i] for i in range(4)]
+        
+        # Map XGBoost output columns to regime names
+        # Use horizon=1 model's classes_ as reference (all should be the same)
+        columns = []
+        for xgb_class in self.horizon_models_[1].classes_:
+            original_regime = self._inverse_label_mapping[int(xgb_class)]
+            columns.append(regime_names[original_regime])
+        
+        # Create result DataFrame
+        result = pd.DataFrame(
+            results,
+            index=range(1, horizon + 1),
+            columns=columns
+        )
+        result.index.name = 'horizon'
+        
+        # Ensure all columns are present
+        for col in all_columns:
+            if col not in result.columns:
+                result[col] = 0.0
+        result = result[all_columns]
+        
+        # Add metadata
+        result.attrs['prediction_date'] = prediction_date
+        result.attrs['asset_name'] = self.asset_name
+        
+        return result
+    
+    def predict_multi_horizon_all(
+        self,
+        X: Optional[pd.DataFrame] = None,
+        horizon: int = 21,
+        test_or_val: str = 'val'
+    ) -> Dict[pd.Timestamp, pd.DataFrame]:
+        """
+        Generate multi-horizon predictions for all dates in the feature set.
+        
+        This method applies predict_multi_horizon() to each row in X,
+        returning a dictionary mapping each date to its horizon predictions.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame, optional
+            Feature matrix. If None, uses X_val or X_test based on test_or_val.
+        horizon : int, default=21
+            Number of days forward to predict for each date
+        test_or_val : str, default='val'
+            Whether to use validation or test data if X is None
+            
+        Returns
+        -------
+        Dict[pd.Timestamp, pd.DataFrame]
+            Dictionary where keys are dates and values are DataFrames
+            with shape (horizon, n_regimes) containing predictions.
+            
+        Examples
+        --------
+        >>> all_predictions = kmrf.predict_multi_horizon_all(horizon=21)
+        >>> # Get predictions starting from a specific date
+        >>> predictions_jan31 = all_predictions[pd.Timestamp('2019-01-31')]
+        """
+        if self.horizon_models_ is None:
+            raise ValueError(
+                "Multi-horizon models not trained. Call fit_multi_horizon() first."
+            )
+        
+        # Get features
+        if X is None:
+            if test_or_val.lower() == 'test':
+                if self.X_test is None:
+                    raise ValueError("No test data available.")
+                X = self.X_test
+            else:
+                if self.X_val is None:
+                    raise ValueError("No validation data available.")
+                X = self.X_val
+        
+        print(f"Generating multi-horizon predictions for {len(X)} dates...")
+        print(f"  Horizon: {horizon} days")
+        print(f"  Date range: {X.index[0]} to {X.index[-1]}")
+        
+        results = {}
+        for i, date in enumerate(X.index):
+            results[date] = self.predict_multi_horizon(
+                X=X.iloc[[i]], 
+                horizon=horizon
+            )
+            
+            if (i + 1) % 100 == 0 or i == len(X) - 1:
+                print(f"  Processed {i + 1}/{len(X)} dates")
+        
+        print(f"✓ Generated predictions for {len(results)} dates")
+        
+        return results
+    
+    def predict_multi_horizon_all_oos(
+        self,
+        X: Optional[pd.DataFrame] = None,
+        horizon: int = 21
+    ) -> Dict[pd.Timestamp, pd.DataFrame]:
+        """
+        Generate multi-horizon predictions for all out-of-sample data (validation + test).
+        
+        This method produces multi-horizon predictions for all dates after training,
+        combining both validation and test sets. Useful for walk-forward analysis
+        where you need multi-step predictions at any specific rebalance date.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame, optional
+            Feature matrix for prediction. If None, concatenates X_val and X_test
+        horizon : int, default=21
+            Number of days forward to predict for each date
+            
+        Returns
+        -------
+        Dict[pd.Timestamp, pd.DataFrame]
+            Dictionary where keys are dates and values are DataFrames
+            with shape (horizon, n_regimes) containing predictions.
+            The dictionary covers all out-of-sample dates (validation + test).
+            
+        Notes
+        -----
+        This is the multi-horizon equivalent of predict_all_oos().
+        For each date in the out-of-sample period, it returns a DataFrame
+        with predictions for t+1, t+2, ..., t+horizon.
+        
+        Examples
+        --------
+        >>> # Train multi-horizon model
+        >>> kmrf.fit_multi_horizon(max_horizon=21)
+        >>> 
+        >>> # Get all out-of-sample multi-horizon predictions
+        >>> all_predictions = kmrf.predict_multi_horizon_all_oos(horizon=21)
+        >>> 
+        >>> # Get prediction for a specific date
+        >>> predictions_at_date = all_predictions[pd.Timestamp('2019-01-31')]
+        >>> print(predictions_at_date.shape)  # (21, 3) for adapted classification
+        """
+        if self.horizon_models_ is None:
+            raise ValueError(
+                "Multi-horizon models not trained. Call fit_multi_horizon() first."
+            )
+        
+        if horizon > self.max_horizon_:
+            raise ValueError(
+                f"Requested horizon ({horizon}) exceeds max trained horizon ({self.max_horizon_}). "
+                f"Retrain with fit_multi_horizon(max_horizon={horizon}) or use a smaller horizon."
+            )
+        
+        if X is None:
+            if self.X_val is None and self.X_test is None:
+                raise ValueError(
+                    "No validation or test data available. Either provide X or run "
+                    "prepare_training_data() with split_data=True."
+                )
+            
+            # Concatenate validation and test sets
+            X_list = []
+            if self.X_val is not None:
+                X_list.append(self.X_val)
+            if self.X_test is not None:
+                X_list.append(self.X_test)
+            
+            X = pd.concat(X_list, axis=0)
+        
+        print(f"\nGenerating multi-horizon predictions for all OOS data...")
+        print(f"  Horizon: {horizon} days")
+        print(f"  Total dates: {len(X)}")
+        print(f"  Date range: {X.index[0]} to {X.index[-1]}")
+        
+        # Apply feature selection if needed (do it once for all data)
+        if self.selected_features is not None and len(self.selected_features) > 0:
+            missing_features = set(self.selected_features) - set(X.columns)
+            if not missing_features:
+                X = X[self.selected_features]
+                print(f"  Applied feature selection: {len(self.selected_features)} features")
+        
+        # Flatten multi-index columns
+        X_flat = X.copy()
+        X_flat.columns = ['_'.join(map(str, col)) if isinstance(col, tuple) else str(col) 
+                          for col in X.columns]
+        
+        # Handle NaN values
+        X_clean = X_flat.fillna(method='ffill').fillna(method='bfill')
+        
+        # Build column names based on classification type
+        if self.classification_type == 'adapted':
+            regime_names = {-1: 'P(Bear)', 0: 'P(Other)', 1: 'P(Bull)'}
+            all_columns = [regime_names[i] for i in [-1, 0, 1]]
+        else:
+            regime_names = {0: 'P(LV_Bull)', 1: 'P(LV_Bear)', 2: 'P(HV_Bull)', 3: 'P(HV_Bear)'}
+            all_columns = [regime_names[i] for i in range(4)]
+        
+        # Map XGBoost output columns to regime names
+        columns = []
+        for xgb_class in self.horizon_models_[1].classes_:
+            original_regime = self._inverse_label_mapping[int(xgb_class)]
+            columns.append(regime_names[original_regime])
+        
+        # Generate predictions for all dates
+        results = {}
+        for i, date in enumerate(X.index):
+            # Get single row
+            X_single = X_clean.iloc[[i]]
+            
+            # Get predictions for each horizon
+            horizon_results = []
+            for h in range(1, horizon + 1):
+                model = self.horizon_models_[h]
+                proba = model.predict_proba(X_single.values)[0]
+                horizon_results.append(proba)
+            
+            # Create result DataFrame for this date
+            result_df = pd.DataFrame(
+                horizon_results,
+                index=range(1, horizon + 1),
+                columns=columns
+            )
+            result_df.index.name = 'horizon'
+            
+            # Ensure all columns are present
+            for col in all_columns:
+                if col not in result_df.columns:
+                    result_df[col] = 0.0
+            result_df = result_df[all_columns]
+            
+            # Add metadata
+            result_df.attrs['prediction_date'] = date
+            result_df.attrs['asset_name'] = self.asset_name
+            
+            results[date] = result_df
+            
+            if (i + 1) % 100 == 0 or i == len(X) - 1:
+                print(f"  Processed {i + 1}/{len(X)} dates")
+        
+        print(f"✓ Generated multi-horizon predictions for {len(results)} OOS dates")
+        
+        return results
+    
+    def pipeline_multi_horizon(
+        self,
+        max_horizon: int = 21,
+        optimize: bool = False,
+        verbose: bool = True
+    ) -> 'KMRF':
+        """
+        Run the full KMRF pipeline with multi-horizon model training.
+        
+        This method executes the complete training workflow using parameters
+        specified during model initialization, but trains separate XGBoost
+        models for each prediction horizon (1 to max_horizon days).
+        
+        Pipeline steps:
+        1. Loads data (raw/ready/master based on use_data_type)
+        2. Computes/loads features for target asset
+        3. Loads cross-asset features (if feature_asset_classes specified)
+        4. Loads macroeconomic data
+        5. Loads KAMA+MSR regime labels
+        6. Adapts labels if classification_type='adapted'
+        7. Prepares training data with feature engineering
+        8. Applies feature selection (Boruta, Consensus, or None based on flags)
+        9. Splits into train/val/test sets
+        10. Trains XGBoost classifiers for each horizon (1 to max_horizon)
+        
+        Parameters
+        ----------
+        max_horizon : int, default=21
+            Maximum prediction horizon (number of days forward to predict)
+        optimize : bool, default=False
+            Whether to run hyperparameter optimization (not yet implemented)
+        verbose : bool, default=True
+            Print detailed training progress
+            
+        Returns
+        -------
+        KMRF
+            Self (for method chaining)
+            
+        Notes
+        -----
+        After running this pipeline, use:
+        - predict_multi_horizon() for single-date multi-step predictions
+        - predict_multi_horizon_all_oos() for all OOS multi-step predictions
+        
+        The standard predict() method still works (uses horizon=1 model).
+        
+        Examples
+        --------
+        >>> # Initialize with configuration
+        >>> kmrf = KMRF(
+        ...     asset_name='SPDR S&P 500 ETF',
+        ...     asset_class='us_equity',
+        ...     use_data_type='master',
+        ...     classification_type='adapted'
+        ... )
+        >>> 
+        >>> # Run multi-horizon pipeline
+        >>> kmrf.pipeline_multi_horizon(max_horizon=21)
+        >>> 
+        >>> # Get multi-step predictions
+        >>> predictions = kmrf.predict_multi_horizon_all_oos(horizon=21)
+        """
+        if optimize:
+            raise NotImplementedError(
+                "Hyperparameter optimization (optimize=True) is not yet implemented."
+            )
+        
+        print(f"\n{'='*80}")
+        print(f"KMRF MULTI-HORIZON PIPELINE FOR {self.asset_name}")
+        print(f"{'='*80}")
+        print(f"Asset Class: {self.asset_class}")
+        print(f"Classification Type: {self.classification_type}")
+        print(f"Data Type: {self.use_data_type}")
+        print(f"Max Prediction Horizon: {max_horizon} days")
+        print(f"Feature Asset Classes: {self.feature_asset_classes}")
+        print(f"Cross-Asset Specifics: {self.cross_asset_specific}")
+        print(f"Feature Window Size: {self.feature_window_size}")
+        print(f"Use Boruta Selection: {self.use_boruta_selection}")
+        print(f"Use Consensus Selection: {self.use_consensus_selection}")
+        print(f"{'='*80}")
+        
+        # Step 1: Load data based on use_data_type
+        print(f"\n[Step 1/10] Loading Data...")
+        use_master_files = (self.use_data_type == 'master')
+        raw_or_ready_data = self.load_data(use_master_df=use_master_files)
+        
+        # Step 2: Get/compute features
+        print(f"\n[Step 2/10] Computing Features...")
+        features = self.get_features()
+        
+        # Step 3: Load KAMA+MSR labels
+        print(f"\n[Step 3/10] Loading KAMA+MSR Labels...")
+        kama_msr_labels = self.load_kama_msr_labels(use_master_label_df=False)
+        
+        # Step 4: Adapt labels if needed
+        if self.classification_type == 'adapted':
+            print(f"\n[Step 4/10] Adapting Labels (4-regime → 3-class)...")
+            adapted_labels = self.adapt_regime_labels(kama_msr_labels)
+        else:
+            print(f"\n[Step 4/10] Using Original 4-Regime Labels...")
+        
+        # Step 5-9: Prepare training data
+        print(f"\n[Step 5-9/10] Preparing Training Data...")
+        
+        # Determine feature selection method
+        if self.use_consensus_selection:
+            feature_selection_method = "Consensus (RF importance + variance + MI)"
+        elif self.use_boruta_selection:
+            feature_selection_method = "Boruta"
+        else:
+            feature_selection_method = "None (using all features)"
+        print(f"  - Feature selection method: {feature_selection_method}")
+        
+        use_cross_asset = len(self.feature_asset_classes) > 0
+        
+        X_train, y_train = self.prepare_training_data(
+            include_macro=True,
+            use_cross_asset_features=use_cross_asset,
+            use_master_df=use_master_files,
+            select_features=False,
+            split_data=True
+        )
+        
+        # Apply feature selection based on initialization flags
+        if self.use_consensus_selection:
+            print(f"\n[Consensus Feature Selection]")
+            # Need to fit a temporary model for feature importances
+            self.fit()
+            selected_features, vote_df, all_methods = self.consensus_feature_selection(
+                X_train=self.X_train,
+                y_train=self.y_train,
+                min_votes=2,
+                variance_threshold=0.01,
+                cumulative_importance_threshold=0.95,
+                mi_top_pct=0.3
+            )
+            
+            # Apply selected features to all splits
+            print(f"\nApplying selected features to all data splits...")
+            self.X_train = self.X_train[selected_features]
+            if self.X_val is not None and len(self.X_val) > 0:
+                self.X_val = self.X_val[selected_features]
+            if self.X_test is not None and len(self.X_test) > 0:
+                self.X_test = self.X_test[selected_features]
+                
+        elif self.use_boruta_selection:
+            print(f"\n[Boruta Feature Selection]")
+            if BorutaPy is None:
+                print("  ⚠️  WARNING: Boruta not installed. Skipping feature selection.")
+            else:
+                selected_features = self.select_features_boruta(
+                    X=self.X_train,
+                    y=self.y_train,
+                    max_iter=100,
+                    percentile=100,
+                    pvalue=0.01,
+                    verbose=2
+                )
+                
+                print(f"\nApplying selected features to all data splits...")
+                self.X_train = self.X_train[selected_features]
+                if self.X_val is not None and len(self.X_val) > 0:
+                    self.X_val = self.X_val[selected_features]
+                if self.X_test is not None and len(self.X_test) > 0:
+                    self.X_test = self.X_test[selected_features]
+        else:
+            print(f"\n[No Feature Selection - Using All Features]")
+        
+        # Step 10: Train Multi-Horizon XGBoost Classifiers
+        print(f"\n[Step 10/10] Training Multi-Horizon XGBoost Classifiers...")
+        self.fit_multi_horizon(max_horizon=max_horizon, verbose=verbose)
+        
+        print(f"\n{'='*80}")
+        print(f"MULTI-HORIZON PIPELINE COMPLETE")
+        print(f"{'='*80}")
+        print(f"✓ Trained {max_horizon} models (horizons 1 to {max_horizon})")
+        print(f"✓ Use predict_multi_horizon() for single-date multi-step predictions")
+        print(f"✓ Use predict_multi_horizon_all_oos() for all OOS predictions")
+        print(f"✓ Use save_model() to persist trained models")
+        print(f"{'='*80}\n")
+        
+        return self
+
     def predict(
         self,
         X: Optional[pd.DataFrame] = None,
