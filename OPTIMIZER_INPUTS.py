@@ -1016,6 +1016,10 @@ class OPTIMIZER_INPUTS:
         if risk_free_rate is not None:
             self.risk_free_rate = risk_free_rate
         
+        # Store optimization parameters for efficient frontier plotting
+        self._allow_short = allow_short
+        self._gross_exposure = gross_exposure
+        
         if verbose:
             print(f"\n{'='*80}")
             print(f"PORTFOLIO OPTIMIZATION")
@@ -1063,20 +1067,27 @@ class OPTIMIZER_INPUTS:
         from scipy.optimize import minimize, Bounds, LinearConstraint, NonlinearConstraint
         
         mu_array = self.mu.values
-        Sigma_array = self.Sigma.values
+        Sigma_array = self.Sigma.values.copy()
         n_assets = len(self.asset_names)
+        
+        # Regularize covariance matrix to improve conditioning
+        min_eigenvalue = np.min(np.linalg.eigvalsh(Sigma_array))
+        if min_eigenvalue < 1e-8:
+            reg_factor = 1e-6 - min_eigenvalue + 1e-8
+            Sigma_array = Sigma_array + reg_factor * np.eye(n_assets)
         
         def negative_sharpe(w):
             """Negative Sharpe ratio (to minimize)."""
             ret = mu_array @ w - self.risk_free_rate
-            risk = np.sqrt(w @ Sigma_array @ w)
+            var = w @ Sigma_array @ w
+            risk = np.sqrt(max(var, 1e-10))
             return -ret / risk if risk > 1e-8 else 1e10
         
         def sharpe_gradient(w):
             """Gradient of negative Sharpe ratio."""
             ret = mu_array @ w - self.risk_free_rate
             var = w @ Sigma_array @ w
-            risk = np.sqrt(var)
+            risk = np.sqrt(max(var, 1e-10))
             
             if risk < 1e-8:
                 return np.zeros(n_assets)
@@ -1090,10 +1101,11 @@ class OPTIMIZER_INPUTS:
         if not allow_short:
             bounds = Bounds(lb=0, ub=1)
         else:
-            bounds = Bounds(lb=-2, ub=2)
+            max_weight = gross_exposure if gross_exposure else 2.0
+            bounds = Bounds(lb=-max_weight, ub=max_weight)
             if gross_exposure is not None:
                 constraints.append(NonlinearConstraint(
-                    lambda w: np.sum(np.abs(w)), lb=0, ub=gross_exposure
+                    lambda w: np.sum(np.abs(w)), lb=0, ub=gross_exposure + 1e-6
                 ))
         
         # Try multiple random starting points
@@ -1101,39 +1113,67 @@ class OPTIMIZER_INPUTS:
         best_sharpe = -np.inf
         
         np.random.seed(self.random_seed + 100)
-        n_tries = 10
+        n_tries = 20  # Increased from 10
         
         for i in range(n_tries):
             if i == 0:
+                # Equal weight start
                 w0 = np.ones(n_assets) / n_assets
+            elif i == 1:
+                # Max return asset (concentrated start)
+                w0 = np.zeros(n_assets)
+                w0[np.argmax(mu_array)] = 1.0
+            elif i == 2:
+                # Min variance approximation
+                diag_inv = 1.0 / np.diag(Sigma_array)
+                w0 = diag_inv / np.sum(diag_inv)
             else:
+                # Random starts
                 w0 = np.random.randn(n_assets)
                 w0 = w0 / np.sum(w0)
                 if not allow_short:
                     w0 = np.abs(w0) / np.sum(np.abs(w0))
             
-            result = minimize(
-                negative_sharpe, w0, method='SLSQP', jac=sharpe_gradient,
-                bounds=bounds, constraints=constraints,
-                options={'maxiter': 500, 'ftol': 1e-9}
-            )
-            
-            if result.success:
-                sharpe = -result.fun
-                if sharpe > best_sharpe:
-                    best_sharpe = sharpe
-                    best_result = result
+            try:
+                result = minimize(
+                    negative_sharpe, w0, method='SLSQP', jac=sharpe_gradient,
+                    bounds=bounds, constraints=constraints,
+                    options={'maxiter': 1000, 'ftol': 1e-8}
+                )
+                
+                if result.success:
+                    sharpe = -result.fun
+                    if sharpe > best_sharpe:
+                        best_sharpe = sharpe
+                        best_result = result
+            except Exception:
+                continue  # Skip failed attempts
         
         if best_result is None:
-            raise RuntimeError("Sharpe ratio optimization failed to converge")
-        
-        self.optimal_weights = pd.Series(best_result.x, index=self.asset_names)
+            # Fallback to convex risk-aversion optimization that approximates max Sharpe
+            # Use risk_aversion ≈ (market Sharpe)^2 which is typically around 0.5-2.0
+            # A value of 1.0 works well as a general approximation
+            import warnings
+            warnings.warn("Sharpe optimization failed to converge, falling back to convex risk-aversion optimization")
+            try:
+                self._optimize_risk_aversion(
+                    risk_aversion=1.0,
+                    allow_short=allow_short,
+                    gross_exposure=gross_exposure
+                )
+            except Exception as e:
+                # Last resort: equal weights
+                warnings.warn(f"Risk-aversion fallback also failed ({e}), using equal weights")
+                self.optimal_weights = pd.Series(np.ones(n_assets) / n_assets, index=self.asset_names)
+        else:
+            self.optimal_weights = pd.Series(best_result.x, index=self.asset_names)
 
     def _optimize_max_sortino(self, allow_short: bool, gross_exposure: Optional[float]) -> None:
         """Maximize Sortino ratio using SLSQP with multiple starting points."""
         from scipy.optimize import minimize, Bounds, LinearConstraint, NonlinearConstraint
         
         mu_array = self.mu.values
+        Sigma_array = self.Sigma.values
         n_assets = len(self.asset_names)
         assets = list(self.simulated_returns.keys())
         
@@ -1144,7 +1184,7 @@ class OPTIMIZER_INPUTS:
                 portfolio_returns += w[i] * self.simulated_returns[asset]
             
             downside_returns = np.minimum(portfolio_returns, 0)
-            return np.sqrt(np.mean(downside_returns ** 2)) * np.sqrt(252)  # Annualized
+            return np.sqrt(np.mean(downside_returns ** 2) + 1e-10) * np.sqrt(252)  # Annualized
         
         def negative_sortino(w):
             """Negative Sortino ratio (to minimize)."""
@@ -1158,10 +1198,11 @@ class OPTIMIZER_INPUTS:
         if not allow_short:
             bounds = Bounds(lb=0, ub=1)
         else:
-            bounds = Bounds(lb=-2, ub=2)
+            max_weight = gross_exposure if gross_exposure else 2.0
+            bounds = Bounds(lb=-max_weight, ub=max_weight)
             if gross_exposure is not None:
                 constraints.append(NonlinearConstraint(
-                    lambda w: np.sum(np.abs(w)), lb=0, ub=gross_exposure
+                    lambda w: np.sum(np.abs(w)), lb=0, ub=gross_exposure + 1e-6
                 ))
         
         # Try multiple starting points
@@ -1169,33 +1210,60 @@ class OPTIMIZER_INPUTS:
         best_sortino = -np.inf
         
         np.random.seed(self.random_seed + 100)
-        n_tries = 10
+        n_tries = 20  # Increased from 10
         
         for i in range(n_tries):
             if i == 0:
+                # Equal weight start
                 w0 = np.ones(n_assets) / n_assets
+            elif i == 1:
+                # Max return asset (concentrated start)
+                w0 = np.zeros(n_assets)
+                w0[np.argmax(mu_array)] = 1.0
+            elif i == 2:
+                # Min variance approximation
+                diag_inv = 1.0 / np.diag(Sigma_array)
+                w0 = diag_inv / np.sum(diag_inv)
             else:
+                # Random starts
                 w0 = np.random.randn(n_assets)
                 w0 = w0 / np.sum(w0)
                 if not allow_short:
                     w0 = np.abs(w0) / np.sum(np.abs(w0))
             
-            result = minimize(
-                negative_sortino, w0, method='SLSQP',
-                bounds=bounds, constraints=constraints,
-                options={'maxiter': 500, 'ftol': 1e-9}
-            )
-            
-            if result.success:
-                sortino = -result.fun
-                if sortino > best_sortino:
-                    best_sortino = sortino
-                    best_result = result
+            try:
+                result = minimize(
+                    negative_sortino, w0, method='SLSQP',
+                    bounds=bounds, constraints=constraints,
+                    options={'maxiter': 1000, 'ftol': 1e-8}
+                )
+                
+                if result.success:
+                    sortino = -result.fun
+                    if sortino > best_sortino:
+                        best_sortino = sortino
+                        best_result = result
+            except Exception:
+                continue  # Skip failed attempts
         
         if best_result is None:
-            raise RuntimeError("Sortino ratio optimization failed to converge")
-        
-        self.optimal_weights = pd.Series(best_result.x, index=self.asset_names)
+            # Fallback to convex risk-aversion optimization that approximates max Sortino
+            # Sortino and Sharpe optimal portfolios are similar, so same risk_aversion works
+            import warnings
+            warnings.warn("Sortino optimization failed to converge, falling back to convex risk-aversion optimization")
+            try:
+                self._optimize_risk_aversion(
+                    risk_aversion=1.0,
+                    allow_short=allow_short,
+                    gross_exposure=gross_exposure
+                )
+            except Exception as e:
+                # Last resort: equal weights
+                warnings.warn(f"Risk-aversion fallback also failed ({e}), using equal weights")
+                n_assets = len(self.asset_names)
+                self.optimal_weights = pd.Series(np.ones(n_assets) / n_assets, index=self.asset_names)
+        else:
+            self.optimal_weights = pd.Series(best_result.x, index=self.asset_names)
 
     def _optimize_risk_aversion(
         self, risk_aversion: float, allow_short: bool, gross_exposure: Optional[float]
@@ -1303,13 +1371,13 @@ class OPTIMIZER_INPUTS:
             'Return Contribution': self.optimal_weights * self.mu,
             'Marginal Risk': marginal_risk,
             'Risk Contribution': risk_contribution,
-            'Risk Contribution %': risk_contribution / risk_contribution.sum() * 100
+            'Risk Contribution %': risk_contribution / risk_contribution.sum()
         })
         
         # Sort by absolute weight
         summary = summary.reindex(summary['Weight'].abs().sort_values(ascending=False).index)
         
-        return summary
+        return summary.round(4).applymap(lambda x: '' if abs(x) < 1e-4 else x)
 
     def portfolio_statistics(self) -> Dict[str, float]:
         """
@@ -1389,7 +1457,9 @@ class OPTIMIZER_INPUTS:
         n_points: int = 50,
         figsize: tuple = (10, 7),
         show_assets: bool = True,
-        show_optimal: bool = True
+        show_optimal: bool = True,
+        allow_short: Optional[bool] = None,
+        gross_exposure: Optional[float] = None
     ):
         """
         Plot the efficient frontier.
@@ -1404,8 +1474,20 @@ class OPTIMIZER_INPUTS:
             Whether to show individual assets
         show_optimal : bool, default=True
             Whether to highlight the optimal portfolio
+        allow_short : bool, optional
+            Whether to allow short selling. If None, uses the setting from optimize_portfolio()
+        gross_exposure : float, optional
+            Maximum gross exposure. If None, uses the setting from optimize_portfolio()
         """
-        frontier = self.compute_efficient_frontier(n_points=n_points)
+        # Use stored optimization parameters if not specified
+        if allow_short is None:
+            allow_short = getattr(self, '_allow_short', False)
+        if gross_exposure is None:
+            gross_exposure = getattr(self, '_gross_exposure', None)
+        
+        frontier = self.compute_efficient_frontier(
+            n_points=n_points, allow_short=allow_short, gross_exposure=gross_exposure
+        )
         
         fig, ax = plt.subplots(figsize=figsize)
         
@@ -1478,7 +1560,16 @@ class OPTIMIZER_INPUTS:
         cp.Problem(obj_minvar, constraints_minvar).solve()
         min_return = float(mu_array @ w_minvar.value)
         
-        max_return = float(self.mu.max())
+        # Maximum return portfolio
+        w_maxret = cp.Variable(n_assets)
+        obj_maxret = cp.Maximize(mu_array @ w_maxret)
+        constraints_maxret = [cp.sum(w_maxret) == 1]
+        if not allow_short:
+            constraints_maxret.append(w_maxret >= 0)
+        if allow_short and gross_exposure is not None:
+            constraints_maxret.append(cp.norm(w_maxret, 1) <= gross_exposure)
+        cp.Problem(obj_maxret, constraints_maxret).solve()
+        max_return = float(mu_array @ w_maxret.value)
         
         target_returns = np.linspace(min_return, max_return, n_points)
         
