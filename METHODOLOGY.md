@@ -54,7 +54,10 @@ The market is modeled with **4 distinct regimes** based on volatility and trend:
 KAMA (Kaufman, 1995) adapts its smoothing based on market efficiency, distinguishing trending vs. noisy periods. It is used for **trend detection** (bullish vs. bearish).
 
 **Efficiency Ratio (ER):**
-$$ER_t = \frac{M_t}{V_t}$$
+
+$$
+ER_t = \frac{M_t}{V_t}
+$$
 
 where:
 - **Momentum:** $M_t = P_t - P_{t-n}$ (change in closing price over n-period)
@@ -66,18 +69,30 @@ where:
 - $ER \to 0$: Consolidating/directionless market (noisy, range-bound)
 
 **KAMA Update Equation:**
-$$KAMA_t = KAMA_{t-1} + C_t (P_t - KAMA_{t-1})$$
+
+$$
+KAMA_t = KAMA_{t-1} + C_t (P_t - KAMA_{t-1})
+$$
 
 **Scaled Smoothing Coefficient:**
-$$C_t = [ER_t (k_s - k_l) + k_l]^2$$
+
+$$
+C_t = [ER_t (k_s - k_l) + k_l]^2
+$$
 
 **Smoothing Constants:**
-$$k_s = \frac{2}{n_s + 1}, \quad k_l = \frac{2}{n_l + 1}$$
+
+$$
+k_s = \frac{2}{n_s + 1}, \quad k_l = \frac{2}{n_l + 1}
+$$
 
 where $n_s$ and $n_l$ are shorter and longer time windows respectively (default: $n_s = 2$, $n_l = 30$).
 
 **Filter for Trade Signals:**
-$$f_t = \gamma \cdot \sigma_{KAMA,t}$$
+
+$$
+f_t = \gamma \cdot \sigma_{KAMA,t}
+$$
 
 where $\sigma_{KAMA,t}$ is the rolling standard deviation of $(KAMA_t - KAMA_{t-1})$ over $n$ periods, and $\gamma$ is a control parameter (optimized).
 
@@ -92,7 +107,10 @@ where $KAMA_{low,n}$ and $KAMA_{high,n}$ are the rolling minimum and maximum of 
 MSR (Krolzig, 1997) is a **Markov-Switching Regression** model (not just a regime model) that models volatility states with state-dependent parameters in a regression framework.
 
 **Observation Equation:**
-$$\ln r_t = \mu_{S_t} + \beta_{S_t} \cdot \ln r_{t-1} + \sigma_{S_t} \cdot \epsilon_t, \quad \epsilon_t \sim N(0,1)$$
+
+$$
+\ln r_t = \mu_{S_t} + \beta_{S_t} \cdot \ln r_{t-1} + \sigma_{S_t} \cdot \epsilon_t, \quad \epsilon_t \sim N(0,1)
+$$
 
 where:
 - $\ln r_t$ = log return at time $t$
@@ -102,19 +120,28 @@ where:
 - $\sigma_{S_t}$ = state-dependent volatility
 
 **State Equation (Transition Probabilities):**
-$$P = \begin{pmatrix} p & 1-p \\ 1-q & q \end{pmatrix}$$
+
+$$
+P = \begin{bmatrix} p & 1-p \\ 1-q & q \end{bmatrix}
+$$
 
 where:
 - $p = P(S_t = 0 | S_{t-1} = 0)$ - probability of staying in low volatility
 - $q = P(S_t = 1 | S_{t-1} = 1)$ - probability of staying in high volatility
 
 **Full Parameter Vector:**
-$$\theta = (p, q, \mu_0, \mu_1, \beta_0, \beta_1, \sigma_0, \sigma_1, \delta)$$
+
+$$
+\theta = (p, q, \mu_0, \mu_1, \beta_0, \beta_1, \sigma_0, \sigma_1, \delta)
+$$
 
 where $\delta = P(S_0 = 0)$ is the initial state distribution parameter.
 
 **Filtered Probabilities:**
-$$p_{it} = P(S_t = i | \ln r_{1:t}; \hat{\theta})$$
+
+$$
+p_{it} = P(S_t = i \mid \ln r_{1:t}; \hat{\theta})
+$$
 
 - $p_{0t}$: probability of low volatility regime at time $t$
 - $p_{1t}$: probability of high volatility regime at time $t$
@@ -210,7 +237,9 @@ Based on contrarian trading logic:
 
 KMRF generates predictions for multiple horizons (e.g., 1, 5, 10, 21 days ahead):
 
-$$\hat{\pi}_{i,m}^{(h)} = P(S_{t+h}^i = m | \mathcal{F}_t)$$
+$$
+\hat{\pi}_{i,m}^{(h)} = P(S_{t+h}^i = m \mid \mathcal{F}_t)
+$$
 
 where:
 - $i$ = asset
@@ -233,10 +262,16 @@ Separate XGBoost models are trained for each prediction horizon.
 Instead of tracking $N^4$ regime combinations for $N$ assets, define a single **Universe Regime**:
 
 **Democracy Method** (average across portfolio):
-$$\bar{\pi}_m = \frac{1}{N} \sum_{i=1}^{N} \pi_{i,m}$$
+
+$$
+\bar{\pi}_m = \frac{1}{N} \sum_{i=1}^{N} \pi_{i,m}
+$$
 
 **Market Method** (single proxy, e.g., S&P 500):
-$$\bar{\pi}_m = \pi_{mkt,m}$$
+
+$$
+\bar{\pi}_m = \pi_{mkt,m}
+$$
 
 **Democracy Tiebreaker:** When regimes are tied in majority vote:
 - Priority: HV_Bear (3) > HV_Bull (2) > LV_Bear (1) > LV_Bull (0)
@@ -246,27 +281,39 @@ $$\bar{\pi}_m = \pi_{mkt,m}$$
 
 Each asset's expected return uses **individual** regime probabilities:
 
-$$\mu_i = \sum_{m=0}^{3} \pi_{i,m} \cdot \mu_{i,m}$$
+$$
+\mu_i = \sum_{m=0}^{3} \pi_{i,m} \cdot \mu_{i,m}
+$$
 
 where:
 - $\pi_{i,m}$ = asset $i$'s forward probability for regime $m$ (from KMRF)
 - $\mu_{i,m} = E[r_i | S=m]$ = historical mean return of asset $i$ in regime $m$
 
 **Annualization:**
-$$\mu_i^{ann} = \mu_i^{daily} \times 252$$
+
+$$
+\mu_i^{ann} = \mu_i^{daily} \times 252
+$$
 
 ### 3.3 Expected Volatilities
 
-$$\sigma_i^2 = \sum_{m=0}^{3} \pi_{i,m} \cdot \sigma_{i,m}^2$$
+$$
+\sigma_i^2 = \sum_{m=0}^{3} \pi_{i,m} \cdot \sigma_{i,m}^2
+$$
 
 **Annualization:**
-$$\sigma_i^{ann} = \sigma_i^{daily} \times \sqrt{252}$$
+
+$$
+\sigma_i^{ann} = \sigma_i^{daily} \times \sqrt{252}
+$$
 
 ### 3.4 Blended Correlation Matrix
 
 Correlations blend using **Universe** probabilities:
 
-$$\bar{\rho}_{ij} = \sum_{m=0}^{3} \bar{\pi}_m \cdot \rho_{ij,m}$$
+$$
+\bar{\rho}_{ij} = \sum_{m=0}^{3} \bar{\pi}_m \cdot \rho_{ij,m}
+$$
 
 where $\rho_{ij,m}$ is the historical correlation between assets $i$ and $j$ when the market was in regime $m$.
 
@@ -276,13 +323,17 @@ where $\rho_{ij,m}$ is the historical correlation between assets $i$ and $j$ whe
 
 The final covariance matrix combines two components:
 
-$$\Sigma_{ij} = \sigma_i \cdot \sigma_j \cdot \bar{\rho}_{ij} + \text{Cov}(\mu_{i,m}, \mu_{j,m})$$
+$$
+\Sigma_{ij} = \sigma_i \cdot \sigma_j \cdot \bar{\rho}_{ij} + \text{Cov}(\mu_{i,m}, \mu_{j,m})
+$$
 
 where the first term is the **within-regime** component and the second is the **between-regime** component.
 
 **Covariance of Means (between-regime component):**
 
-$$\text{Cov}(\mu_{i,m}, \mu_{j,m}) = \sum_{m=0}^{3} \bar{\pi}_m \cdot (\mu_{i,m} - \mu_i)(\mu_{j,m} - \mu_j)$$
+$$
+\text{Cov}(\mu_{i,m}, \mu_{j,m}) = \sum_{m=0}^{3} \bar{\pi}_m \cdot (\mu_{i,m} - \mu_i)(\mu_{j,m} - \mu_j)
+$$
 
 This captures additional covariance from regime transitions—assets that move together during regime switches.
 
@@ -352,16 +403,28 @@ where:
 ### 4.3 Standard Constraints
 
 **Budget Constraint:**
-$$\sum_i w_i = 1$$
+
+$$
+\sum_i w_i = 1
+$$
 
 **Box Constraints:**
-$$w_{min} \leq w_i \leq w_{max} \quad \forall i$$
+
+$$
+w_{min} \leq w_i \leq w_{max} \quad \forall i
+$$
 
 **Gross Exposure (when shorting):**
-$$\sum_i |w_i| \leq L$$
+
+$$
+\sum_i |w_i| \leq L
+$$
 
 **Turnover Constraint:**
-$$\frac{1}{2}\sum_i |w_i^{new} - w_i^{old}| \leq T$$
+
+$$
+\frac{1}{2}\sum_i |w_i^{new} - w_i^{old}| \leq T
+$$
 
 ### 4.4 Solution Methods
 
