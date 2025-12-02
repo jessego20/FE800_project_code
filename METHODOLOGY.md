@@ -77,12 +77,9 @@ $$k_s = \frac{2}{n_s + 1}, \quad k_l = \frac{2}{n_l + 1}$$
 where $n_s$ and $n_l$ are shorter and longer time windows respectively (default: $n_s = 2$, $n_l = 30$).
 
 **Filter for Trade Signals:**
-$$f_t = \gamma \cdot \sigma(KAMA_t)$$
+$$f_t = \gamma \cdot \sigma_{KAMA,t}$$
 
-where:
-$$\sigma(KAMA_t) = \text{rolling std of } (KAMA_t - KAMA_{t-1}) \text{ over } n \text{ periods}$$
-
-and $\gamma$ is a control parameter (optimized).
+where $\sigma_{KAMA,t}$ is the rolling standard deviation of $(KAMA_t - KAMA_{t-1})$ over $n$ periods, and $\gamma$ is a control parameter (optimized).
 
 **Trading Signal Rules:**
 - **Bullish (buy):** $KAMA_t - KAMA_{low,n} > f_t$ (KAMA advances above its n-day low by more than the filter)
@@ -249,18 +246,18 @@ $$\bar{\pi}_m = \pi_{mkt,m}$$
 
 Each asset's expected return uses **individual** regime probabilities:
 
-$$\mu_i = \sum_{m=0}^{3} \pi_{i,m} \cdot \mathbb{E}[r_i | \text{regime}=m]$$
+$$\mu_i = \sum_{m=0}^{3} \pi_{i,m} \cdot \mu_{i,m}$$
 
 where:
 - $\pi_{i,m}$ = asset $i$'s forward probability for regime $m$ (from KMRF)
-- $\mathbb{E}[r_i | \text{regime}=m]$ = historical mean return in regime $m$
+- $\mu_{i,m} = E[r_i | S=m]$ = historical mean return of asset $i$ in regime $m$
 
 **Annualization:**
 $$\mu_i^{ann} = \mu_i^{daily} \times 252$$
 
 ### 3.3 Expected Volatilities
 
-$$\sigma_i^2 = \sum_{m=0}^{3} \pi_{i,m} \cdot \text{Var}[r_i | \text{regime}=m]$$
+$$\sigma_i^2 = \sum_{m=0}^{3} \pi_{i,m} \cdot \sigma_{i,m}^2$$
 
 **Annualization:**
 $$\sigma_i^{ann} = \sigma_i^{daily} \times \sqrt{252}$$
@@ -279,11 +276,13 @@ where $\rho_{ij,m}$ is the historical correlation between assets $i$ and $j$ whe
 
 The final covariance matrix combines two components:
 
-$$\Sigma_{ij} = \underbrace{\sigma_i \cdot \sigma_j \cdot \bar{\rho}_{ij}}_{\text{Within-regime}} + \underbrace{\text{Cov}(\mathbb{E}[r_i|m], \mathbb{E}[r_j|m])}_{\text{Between-regime}}$$
+$$\Sigma_{ij} = \sigma_i \cdot \sigma_j \cdot \bar{\rho}_{ij} + \text{Cov}(\mu_{i,m}, \mu_{j,m})$$
+
+where the first term is the **within-regime** component and the second is the **between-regime** component.
 
 **Covariance of Means (between-regime component):**
 
-$$\text{Cov}(\mathbb{E}[r_i|m], \mathbb{E}[r_j|m]) = \sum_{m=0}^{3} \bar{\pi}_m \cdot (\mu_{i,m} - \mu_i)(\mu_{j,m} - \mu_j)$$
+$$\text{Cov}(\mu_{i,m}, \mu_{j,m}) = \sum_{m=0}^{3} \bar{\pi}_m \cdot (\mu_{i,m} - \mu_i)(\mu_{j,m} - \mu_j)$$
 
 This captures additional covariance from regime transitions—assets that move together during regime switches.
 
@@ -431,9 +430,9 @@ BACKTEST(
 | Annualized Volatility | $\sigma_{daily} \times \sqrt{252}$ |
 | Sharpe Ratio | $(\mu - r_f) / \sigma$ |
 | Sortino Ratio | $(\mu - r_f) / \sigma_{downside}$ |
-| Max Drawdown | $\min_t \frac{V_t - \max_{s \leq t} V_s}{\max_{s \leq t} V_s}$ |
-| Calmar Ratio | $\mu_{ann} / |\text{MaxDD}|$ |
-| Win Rate | $\#\{r_t > 0\} / n$ |
+| Max Drawdown | $\min_t (V_t - V_{peak,t}) / V_{peak,t}$ |
+| Calmar Ratio | $\mu_{ann} / |MDD|$ |
+| Win Rate | (# positive days) / n |
 
 ### 5.5 Benchmark Comparisons
 
