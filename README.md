@@ -1,6 +1,11 @@
 # KMRF Portfolio Optimization Methodology
 ## Complete Mathematical Framework
 
+Based on:
+- Pomorski & Gorse (2022) - "Improving on the Markov-Switching Regression Model by the Use of an Adaptive Moving Average"
+- Pomorski & Gorse (2023a) - "Improving Portfolio Performance Using a Novel Method for Predicting Financial Regimes"
+- Pomorski & Gorse (2023b) - "Multi-Period Portfolio Optimisation Using a Regime-Switching Predictive Framework"
+
 ---
 
 ## Table of Contents
@@ -42,63 +47,92 @@ The market is modeled with **4 distinct regimes** based on volatility and trend:
 
 **File:** `kama_msr.py`
 
-### 1.1 KAMA (Kaufman Adaptive Moving Average)
+**Reference:** Pomorski & Gorse (2022) - "Improving on the Markov-Switching Regression Model by the Use of an Adaptive Moving Average"
 
-KAMA adapts its smoothing based on market efficiency, distinguishing trending vs. noisy periods.
+### 1.1 KAMA (Kaufman's Adaptive Moving Average)
 
-**Efficiency Ratio:**
-$$ER_t = \frac{|P_t - P_{t-n}|}{\sum_{i=0}^{n-1} |P_{t-i} - P_{t-i-1}|}$$
+KAMA (Kaufman, 1995) adapts its smoothing based on market efficiency, distinguishing trending vs. noisy periods. It is used for **trend detection** (bullish vs. bearish).
+
+**Efficiency Ratio (ER):**
+$$ER_t = \frac{M_t}{V_t}$$
 
 where:
-- $P_t$ = price at time $t$
-- $n$ = efficiency ratio period (default: 10)
-- Numerator = directional movement
-- Denominator = total volatility
+- **Momentum:** $M_t = P_t - P_{t-n}$ (change in closing price over n-period)
+- **Volatility:** $V_t = \sum_{i=1}^{n} |P_{t-i+1} - P_{t-i}|$ (sum of absolute daily price changes)
+- $0 \leq ER \leq 1$
 
 **Interpretation:**
-- $ER \to 1$: Strong trend (directional movement ≈ total movement)
-- $ER \to 0$: Noisy/range-bound (directional movement << total movement)
+- $ER \to 1$: Strong, clearly defined trend (directional movement ≈ total movement)
+- $ER \to 0$: Consolidating/directionless market (noisy, range-bound)
 
-**Adaptive Smoothing Constant:**
-$$SC_t = [ER_t \times (fast - slow) + slow]^2$$
+**KAMA Update Equation:**
+$$KAMA_t = KAMA_{t-1} + C_t (P_t - KAMA_{t-1})$$
 
-where:
-- $fast = 2/(2+1) = 0.667$ (2-period EMA equivalent)
-- $slow = 2/(30+1) = 0.0645$ (30-period EMA equivalent)
+**Scaled Smoothing Coefficient:**
+$$C_t = [ER_t (k_s - k_l) + k_l]^2$$
 
-**KAMA Update:**
-$$KAMA_t = KAMA_{t-1} + SC_t \times (P_t - KAMA_{t-1})$$
+**Smoothing Constants:**
+$$k_s = \frac{2}{n_s + 1}, \quad k_l = \frac{2}{n_l + 1}$$
 
-**Trend Detection:**
-- **Bullish:** Price consistently above KAMA
-- **Bearish:** Price consistently below KAMA
-- **Minimum Duration:** Trends must persist for minimum periods (default: 5)
+where $n_s$ and $n_l$ are shorter and longer time windows respectively (default: $n_s = 2$, $n_l = 30$).
 
-### 1.2 MSR (Markov-Switching Regime)
-
-MSR models volatility regimes using a hidden Markov model with 2 states (LV/HV).
-
-**Observation Model:**
-$$r_t | S_t = s \sim \mathcal{N}(\mu_s, \sigma_s^2)$$
+**Filter for Trade Signals:**
+$$f_t = \gamma \cdot \sigma(KAMA_t)$$
 
 where:
-- $r_t$ = return at time $t$
-- $S_t \in \{LV, HV\}$ = latent volatility state
-- $\mu_s, \sigma_s$ = regime-specific mean and volatility
+$$\sigma(KAMA_t) = \text{rolling std of } (KAMA_t - KAMA_{t-1}) \text{ over } n \text{ periods}$$
 
-**Transition Matrix:**
-$$\Pi = \begin{bmatrix} \pi_{LV \to LV} & \pi_{LV \to HV} \\ \pi_{HV \to LV} & \pi_{HV \to HV} \end{bmatrix}$$
+and $\gamma$ is a control parameter (optimized).
 
-**Estimation via Gibbs Sampling:**
+**Trading Signal Rules:**
+- **Bullish (buy):** $KAMA_t - KAMA_{low,n} > f_t$ (KAMA advances above its n-day low by more than the filter)
+- **Bearish (sell):** $KAMA_{high,n} - KAMA_t > f_t$ (KAMA descends below its n-day high by more than the filter)
 
-1. Initialize regime labels randomly
+where $KAMA_{low,n}$ and $KAMA_{high,n}$ are the rolling minimum and maximum of KAMA over the prior n days.
+
+### 1.2 MSR (Markov-Switching Regression)
+
+MSR (Krolzig, 1997) is a **Markov-Switching Regression** model (not just a regime model) that models volatility states with state-dependent parameters in a regression framework.
+
+**Observation Equation:**
+$$\ln r_t = \mu_{S_t} + \beta_{S_t} \cdot \ln r_{t-1} + \sigma_{S_t} \cdot \epsilon_t, \quad \epsilon_t \sim N(0,1)$$
+
+where:
+- $\ln r_t$ = log return at time $t$
+- $S_t \in \{0, 1\}$ = latent volatility state (0 = low volatility, 1 = high volatility)
+- $\mu_{S_t}$ = state-dependent intercept
+- $\beta_{S_t}$ = state-dependent coefficient of lagged log returns
+- $\sigma_{S_t}$ = state-dependent volatility
+
+**State Equation (Transition Probabilities):**
+$$P = \begin{pmatrix} p & 1-p \\ 1-q & q \end{pmatrix}$$
+
+where:
+- $p = P(S_t = 0 | S_{t-1} = 0)$ - probability of staying in low volatility
+- $q = P(S_t = 1 | S_{t-1} = 1)$ - probability of staying in high volatility
+
+**Full Parameter Vector:**
+$$\theta = (p, q, \mu_0, \mu_1, \beta_0, \beta_1, \sigma_0, \sigma_1, \delta)$$
+
+where $\delta = P(S_0 = 0)$ is the initial state distribution parameter.
+
+**Filtered Probabilities:**
+$$p_{it} = P(S_t = i | \ln r_{1:t}; \hat{\theta})$$
+
+- $p_{0t}$: probability of low volatility regime at time $t$
+- $p_{1t}$: probability of high volatility regime at time $t$
+
+**Estimation via Gibbs Sampling (MCMC):**
+
+1. Initialize regime labels and parameters
 2. For each iteration:
    - Sample regime means: $\mu_s | r, S \sim \mathcal{N}(\bar{r}_s, \sigma_s^2/n_s)$
+   - Sample regime betas: $\beta_s | r, S$
    - Sample regime variances: $\sigma_s^2 | r, S \sim \text{InvGamma}$
-   - Sample transition probabilities: $\pi_{i \to j} | S \sim \text{Dirichlet}$
-   - Sample regime sequence: Forward-filtering backward-sampling
+   - Sample transition probabilities: $(p, q) | S \sim \text{Beta}$
+   - Sample regime sequence: Forward-filtering backward-sampling (FFBS)
 3. Discard burn-in (default: 200 iterations)
-4. Use posterior mode for final labels
+4. Use posterior estimates for regime probabilities
 
 **Configuration:**
 - Gibbs iterations: 1000
@@ -107,14 +141,17 @@ $$\Pi = \begin{bmatrix} \pi_{LV \to LV} & \pi_{LV \to HV} \\ \pi_{HV \to LV} & \
 
 ### 1.3 Combined KAMA+MSR Labeling
 
-The 4-regime labels are created by combining:
+The 4-regime labels are created by combining MSR volatility states (using 50% probability cutoff) with KAMA trend signals:
 
-| KAMA Trend | MSR Volatility | Final Regime |
-|------------|----------------|--------------|
-| Bullish | Low Volatility | 0 (LV_Bull) |
-| Bearish | Low Volatility | 1 (LV_Bear) |
-| Bullish | High Volatility | 2 (HV_Bull) |
-| Bearish | High Volatility | 3 (HV_Bear) |
+| MSR Volatility | KAMA Trend | Final Regime |
+|----------------|------------|--------------|
+| $P(S_t = 0) > 50\%$ (LV) | Bullish | 0 (LV_Bull) |
+| $P(S_t = 0) > 50\%$ (LV) | Bearish | 1 (LV_Bear) |
+| $P(S_t = 1) > 50\%$ (HV) | Bullish | 2 (HV_Bull) |
+| $P(S_t = 1) > 50\%$ (HV) | Bearish | 3 (HV_Bear) |
+
+**Parameter Optimization:**
+The KAMA parameters $(n, n_s, n_l, \gamma)$ are optimized to minimize misclassification score using K-Means clustering on slope-volatility feature space.
 
 **Output:** Time series of regime labels for each asset
 
@@ -125,6 +162,10 @@ The 4-regime labels are created by combining:
 **Purpose:** Predict future regime probabilities (ex-ante forecasting)
 
 **File:** `kmrf.py`
+
+**Reference:** Pomorski & Gorse (2023a) - "Improving Portfolio Performance Using a Novel Method for Predicting Financial Regimes"
+
+**Note:** This implementation uses **XGBoost** (`XGBClassifier`) instead of Random Forest as in the original paper, for improved performance.
 
 ### 2.1 Feature Engineering
 
@@ -140,22 +181,31 @@ Features are computed with **1-day lag** to prevent look-ahead bias:
 - VIX, credit spreads, yield curve
 - Economic indicators from FRED API
 
-**Feature Selection (BorutaPy):**
-- Uses Random Forest to identify shadow features
+**Feature Selection (BorutaPy/BorutaShap):**
+- Uses tree-based model to identify shadow features
 - Compares feature importance vs. randomized versions
 - Retains only statistically significant features
 - 100 max iterations with time-series cross-validation
 
-### 2.2 Random Forest Classifier
+### 2.2 XGBoost Classifier
 
-**Model:** `sklearn.ensemble.RandomForestClassifier`
+**Model:** `xgboost.XGBClassifier`
 
-**Target Variable:** 4-regime labels from KAMA+MSR (or adapted 3-class)
+**Target Variable:** 4-regime labels from KAMA+MSR
+
+**Cross-Validation:** Purged Group Time-Series Split (PGTS) from Lopez de Prado (2018)
+- Prevents temporal leakage between train and validation sets
+- 15-day gap (purge) between folds
 
 **Training:**
-- Purged Group Time-Series Split to prevent leakage
-- 15-day gap between train/validation sets
 - Hyperparameter tuning on validation set
+- Early stopping to prevent overfitting
+
+**Label Adaptation (Optional - 4 regimes → 3 classes):**
+Based on contrarian trading logic:
+- **Bullish (1):** LV bullish + extension to peak of next HV bullish regime
+- **Bearish (-1):** HV bearish + extension to trough of next LV bearish regime
+- **Other (0):** Remaining parts of HV bullish and LV bearish regimes
 
 **Output:** Probability distribution over regimes for each forecast horizon
 
@@ -170,6 +220,8 @@ where:
 - $m$ = regime (0-3)
 - $h$ = forecast horizon
 - $\mathcal{F}_t$ = information available at time $t$
+
+Separate XGBoost models are trained for each prediction horizon.
 
 ---
 
@@ -405,7 +457,7 @@ bt.plot_weights_heatmap()    # Weight allocation heatmap
 
 ```
 ├── kama_msr.py              # Stage 1: KAMA, MSR, KAMA_MSR classes
-├── kmrf.py                  # Stage 2: KMRF class
+├── kmrf.py                  # Stage 2: KMRF class (XGBoost-based)
 ├── ANALYTICAL_INPUTS.py     # Stage 3: Analytical μ, Σ computation
 ├── PORTFOLIO_OPTIMIZER.py   # Stage 4: Weight optimization
 ├── BACKTEST.py              # Stage 5: Backtesting framework
@@ -454,6 +506,17 @@ bt.plot_performance()
 
 ---
 
-**Document Version:** 3.0  
+## References
+
+1. **Kaufman, P. J. (1995).** *Smarter Trading: Improving Performance in Changing Markets.* McGraw-Hill.
+2. **Krolzig, H.-M. (1997).** *Markov-Switching Vector Autoregressions.* Springer.
+3. **Lopez de Prado, M. (2018).** *Advances in Financial Machine Learning.* Wiley.
+4. **Pomorski, D. & Gorse, D. (2022).** "Improving on the Markov-Switching Regression Model by the Use of an Adaptive Moving Average."
+5. **Pomorski, D. & Gorse, D. (2023a).** "Improving Portfolio Performance Using a Novel Method for Predicting Financial Regimes."
+6. **Pomorski, D. & Gorse, D. (2023b).** "Multi-Period Portfolio Optimisation Using a Regime-Switching Predictive Framework."
+
+---
+
+**Document Version:** 3.1  
 **Last Updated:** December 2024  
 **Author:** Jesse Goodman
