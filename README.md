@@ -500,8 +500,8 @@ BACKTEST(
 ### 5.5 Benchmark Comparisons
 
 - **S&P 500:** Buy-and-hold SPY
-- **Equal Weight:** Equal-weighted portfolio on same rebalance schedule
-- **MV Long-Only:** Mean-variance using historical returns only
+- **MV Buy & Hold:** Mean-variance using simple historical returns calibration, buy at start and hold
+- **MV Rebalance:** Mean-variance using simple historical returns calibration, rebalanced at same schedule as regime-aware portfolio
 
 ### 5.6 Visualization
 
