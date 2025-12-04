@@ -9,7 +9,7 @@ Key Features:
 - Portfolio performance tracking with daily returns
 - Transaction cost modeling
 - Comprehensive performance metrics (Sharpe, Sortino, Drawdown, etc.)
-- Benchmark comparisons (S&P 500, Equal Weight, Mean-Variance)
+- Benchmark comparisons (SPY Buy & Hold, MV Historical Buy & Hold, MV Historical Rebalanced)
 - Visualization tools
 
 Author: Jesse Goodman
@@ -166,6 +166,7 @@ class BACKTEST:
         # Benchmark results
         self.benchmark_values: Optional[Dict[str, pd.Series]] = None
         self.benchmark_returns: Optional[Dict[str, pd.Series]] = None
+        self.benchmark_weights: Optional[Dict[str, pd.DataFrame]] = None
         
         # Optimization details (for analysis)
         self._optimization_inputs: Dict[pd.Timestamp, ANALYTICAL_INPUTS] = {}
@@ -439,23 +440,32 @@ class BACKTEST:
             days_mask = (backtest_days > rebal_date) & (backtest_days <= next_rebal)
             holding_days = backtest_days[days_mask]
             
+            # Track actual (drifted) weights within holding period
+            current_weights = weights.copy()
+            
             # Calculate returns for each day in holding period
             for day in holding_days:
                 # Get asset returns for this day
                 day_returns = self._asset_returns.loc[day, self.asset_list].fillna(0)
                 
-                # Portfolio return
-                port_return = (weights * day_returns).sum()
+                # Portfolio return using current (possibly drifted) weights
+                port_return = (current_weights * day_returns).sum()
                 returns_list.append(port_return)
                 
                 # Update portfolio value
                 current_portfolio_value *= (1 + port_return)
                 portfolio_values.append(current_portfolio_value)
                 
-                # Store daily weights (weights don't change within holding period)
-                daily_weights_list.append(weights)
+                # Store daily weights (actual drifted weights)
+                daily_weights_list.append(current_weights.copy())
+                
+                # Update weights based on drift
+                if abs(1 + port_return) > 1e-10:
+                    current_weights = current_weights * (1 + day_returns) / (1 + port_return)
+                    current_weights = current_weights / current_weights.sum()  # Normalize
             
-            previous_weights = weights.copy()
+            # Store drifted weights for turnover calculation at next rebalance
+            previous_weights = current_weights.copy()
         
         # Build result DataFrames
         self.weights_history = pd.DataFrame(weights_dict).T
@@ -685,16 +695,29 @@ class BACKTEST:
             days_mask = (backtest_days > rebal_date) & (backtest_days <= next_rebal)
             holding_days = backtest_days[days_mask]
             
+            # Track actual (drifted) weights within holding period
+            current_weights = weights.copy()
+            
             # Calculate returns for each day in holding period
             for day in holding_days:
                 day_returns = self._asset_returns.loc[day, self.asset_list].fillna(0)
-                port_return = (weights * day_returns).sum()
+                
+                # Portfolio return using current (possibly drifted) weights
+                port_return = (current_weights * day_returns).sum()
                 returns_list.append(port_return)
                 current_portfolio_value *= (1 + port_return)
                 portfolio_values.append(current_portfolio_value)
-                daily_weights_list.append(weights)
+                
+                # Store daily weights (actual drifted weights)
+                daily_weights_list.append(current_weights.copy())
+                
+                # Update weights based on drift
+                if abs(1 + port_return) > 1e-10:
+                    current_weights = current_weights * (1 + day_returns) / (1 + port_return)
+                    current_weights = current_weights / current_weights.sum()  # Normalize
             
-            previous_weights = weights.copy()
+            # Store drifted weights for turnover calculation at next rebalance
+            previous_weights = current_weights.copy()
         
         # Build result DataFrames
         self.weights_history = pd.DataFrame(weights_dict).T
@@ -804,9 +827,9 @@ class BACKTEST:
         Compute benchmark portfolios.
         
         Creates:
-        - S&P 500: Buy and hold S&P 500 ETF
-        - Equal Weight: Equal weight all assets, rebalanced on same schedule
-        - MV Long-Only: Mean-variance long-only using historical returns
+        - SPY Buy & Hold: Buy and hold S&P 500 ETF
+        - MV Historical (B&H): Mean-variance with historical calibration, optimized once at start, buy and hold
+        - MV Historical (Rebal): Mean-variance with historical calibration, rebalanced at same frequency with same constraints
         """
         if self.benchmark_values is not None:
             return
@@ -815,32 +838,133 @@ class BACKTEST:
         
         self.benchmark_values = {}
         self.benchmark_returns = {}
+        self.benchmark_weights = {}
         
-        # === 1. S&P 500 Benchmark ===
+        # === 1. SPY Buy & Hold Benchmark ===
         spy_returns = self._asset_returns['SPDR S&P 500 ETF'].reindex(backtest_days).fillna(0)
         spy_values = (1 + spy_returns).cumprod() * self.initial_capital
-        self.benchmark_returns['S&P 500'] = spy_returns
-        self.benchmark_values['S&P 500'] = spy_values
+        self.benchmark_returns['SPY Buy & Hold'] = spy_returns
+        self.benchmark_values['SPY Buy & Hold'] = spy_values
         
-        # === 2. Equal Weight Benchmark ===
-        n_assets = len(self.asset_list)
-        equal_weights = pd.Series(1.0 / n_assets, index=self.asset_list)
+        # SPY weights: 100% SPY, 0% everything else
+        spy_weights = pd.Series(0.0, index=self.asset_list)
+        if 'SPDR S&P 500 ETF' in self.asset_list:
+            spy_weights['SPDR S&P 500 ETF'] = 1.0
+        else:
+            # If SPY not in asset list, just note it
+            spy_weights = pd.Series({'SPDR S&P 500 ETF': 1.0})
+        self.benchmark_weights['SPY Buy & Hold'] = pd.DataFrame([spy_weights], index=[backtest_days[0]])
         
-        eq_returns_list = []
-        for day in backtest_days:
-            day_returns = self._asset_returns.loc[day, self.asset_list].fillna(0)
-            eq_returns_list.append((equal_weights * day_returns).sum())
+        # === 2. MV Historical Buy & Hold ===
+        self._compute_mv_buy_and_hold_benchmark(lookback_days)
         
-        eq_returns = pd.Series(eq_returns_list, index=backtest_days)
-        eq_values = (1 + eq_returns).cumprod() * self.initial_capital
-        self.benchmark_returns['Equal Weight'] = eq_returns
-        self.benchmark_values['Equal Weight'] = eq_values
-        
-        # === 3. MV Long-Only Benchmark ===
-        self._compute_mv_benchmark(lookback_days, allow_short=False)
+        # === 3. MV Historical Rebalanced (same constraints) ===
+        self._compute_mv_rebalanced_benchmark(lookback_days)
     
-    def _compute_mv_benchmark(self, lookback_days: int, allow_short: bool):
-        """Compute mean-variance benchmark."""
+    def _compute_mv_buy_and_hold_benchmark(self, lookback_days: int):
+        """
+        Compute mean-variance buy-and-hold benchmark.
+        
+        Optimizes portfolio once at the start date using historical data,
+        then holds those weights throughout the backtest (no rebalancing).
+        Uses the same constraints as the main strategy.
+        """
+        from scipy.optimize import minimize
+        
+        backtest_days = self.returns.index
+        asset_returns = self._asset_returns[self.asset_list].copy()
+        
+        # Get lookback data from before start date
+        lookback_end = self.rebalance_dates[0] if len(self.rebalance_dates) > 0 else backtest_days[0]
+        lookback_start = lookback_end - pd.Timedelta(days=int(lookback_days * 1.5))
+        lookback_mask = (asset_returns.index >= lookback_start) & (asset_returns.index < lookback_end)
+        returns_lookback = asset_returns.loc[lookback_mask].dropna()
+        
+        n = len(self.asset_list)
+        
+        if len(returns_lookback) >= 20:
+            mu = returns_lookback.mean() * 252
+            Sigma = returns_lookback.cov() * 252
+            
+            # Use same objective as strategy
+            if self.objective == 'max_sharpe':
+                def objective_func(w):
+                    ret = np.dot(w, mu)
+                    vol = np.sqrt(np.dot(w, np.dot(Sigma, w)))
+                    return -ret / vol if vol > 1e-10 else 1e10
+            elif self.objective == 'min_variance':
+                def objective_func(w):
+                    return np.dot(w, np.dot(Sigma, w))
+            elif self.objective == 'mean_variance':
+                def objective_func(w):
+                    ret = np.dot(w, mu)
+                    var = np.dot(w, np.dot(Sigma, w))
+                    return -(ret - self.risk_aversion * var)
+            else:  # risk_parity - use equal weight as fallback for buy-and-hold
+                mv_weights = pd.Series(1.0 / n, index=self.asset_list)
+                mu = None  # Skip optimization
+            
+            if mu is not None:
+                # Apply same constraints as strategy
+                # Net exposure = 1 (fully invested)
+                constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+                
+                # Bounds: use strategy's min/max weight constraints
+                bounds = [(self.min_weight, self.max_weight) for _ in range(n)]
+                
+                # Gross exposure constraint (relevant when short selling allowed)
+                if self.allow_short_selling:
+                    constraints.append({
+                        'type': 'ineq', 
+                        'fun': lambda w, gel=self.gross_exposure_limit: gel - np.sum(np.abs(w))
+                    })
+                
+                w0 = np.ones(n) / n
+                result = minimize(objective_func, w0, method='SLSQP', bounds=bounds, constraints=constraints)
+                
+                if result.success:
+                    mv_weights = pd.Series(result.x, index=mu.index)
+                else:
+                    mv_weights = pd.Series(1.0 / n, index=self.asset_list)
+        else:
+            mv_weights = pd.Series(1.0 / n, index=self.asset_list)
+        
+        # Compute returns with TRUE buy and hold (weights drift with prices)
+        # Start with target weights, then let positions drift naturally
+        current_weights = mv_weights.copy()
+        mv_returns_list = []
+        
+        for day in backtest_days:
+            day_returns = asset_returns.loc[day].fillna(0)
+            
+            # Portfolio return is weighted sum of asset returns
+            port_return = (current_weights * day_returns).sum()
+            mv_returns_list.append(port_return)
+            
+            # Update weights based on how each position grew/shrank
+            # new_weight_i = old_weight_i * (1 + r_i) / (1 + r_portfolio)
+            if abs(1 + port_return) > 1e-10:
+                current_weights = current_weights * (1 + day_returns) / (1 + port_return)
+            # Normalize to handle any numerical drift
+            current_weights = current_weights / current_weights.sum()
+        
+        mv_returns = pd.Series(mv_returns_list, index=backtest_days)
+        mv_values = (1 + mv_returns).cumprod() * self.initial_capital
+        
+        self.benchmark_returns['MV Historical (B&H)'] = mv_returns
+        self.benchmark_values['MV Historical (B&H)'] = mv_values
+        
+        # Store initial weights (single row since buy-and-hold)
+        self.benchmark_weights['MV Historical (B&H)'] = pd.DataFrame([mv_weights], index=[backtest_days[0]])
+    
+    def _compute_mv_rebalanced_benchmark(self, lookback_days: int):
+        """
+        Compute mean-variance rebalanced benchmark.
+        
+        Rebalances at the same frequency as the main strategy using historical
+        returns for calibration (no regime information). Uses same constraints
+        and transaction costs.
+        """
         from scipy.optimize import minimize
         
         backtest_days = self.returns.index
@@ -848,11 +972,19 @@ class BACKTEST:
         
         mv_returns_list = []
         mv_weights = None
+        current_weights = None  # Tracks actual (drifted) weights between rebalances
+        prev_weights = None     # For transaction cost calculation
         rebal_idx = 0
+        n = len(self.asset_list)
+        current_value = self.initial_capital
+        mv_values_list = [current_value]
+        
+        # Track weights at each rebalance
+        weights_history = {}
         
         for i, day in enumerate(backtest_days):
             # Check if we need to rebalance
-            if rebal_idx < len(self.rebalance_dates) and day > self.rebalance_dates[rebal_idx]:
+            if rebal_idx < len(self.rebalance_dates) and day >= self.rebalance_dates[rebal_idx]:
                 rebal_date = self.rebalance_dates[rebal_idx]
                 rebal_idx += 1
                 
@@ -866,38 +998,97 @@ class BACKTEST:
                     mu = returns_lookback.mean() * 252
                     Sigma = returns_lookback.cov() * 252
                     
-                    n = len(mu)
+                    # Use same objective as strategy
+                    if self.objective == 'max_sharpe':
+                        def objective_func(w):
+                            ret = np.dot(w, mu)
+                            vol = np.sqrt(np.dot(w, np.dot(Sigma, w)))
+                            return -ret / vol if vol > 1e-10 else 1e10
+                    elif self.objective == 'min_variance':
+                        def objective_func(w):
+                            return np.dot(w, np.dot(Sigma, w))
+                    elif self.objective == 'mean_variance':
+                        def objective_func(w):
+                            ret = np.dot(w, mu)
+                            var = np.dot(w, np.dot(Sigma, w))
+                            return -(ret - self.risk_aversion * var)
+                    else:  # risk_parity - approximate with inverse vol
+                        vols = np.sqrt(np.diag(Sigma))
+                        inv_vols = 1.0 / vols
+                        mv_weights = pd.Series(inv_vols / inv_vols.sum(), index=mu.index)
+                        mu = None  # Skip optimization
                     
-                    def neg_sharpe(w):
-                        ret = np.dot(w, mu)
-                        vol = np.sqrt(np.dot(w, np.dot(Sigma, w)))
-                        return -ret / vol if vol > 1e-10 else 1e10
-                    
-                    constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
-                    bounds = [(0, 1) for _ in range(n)]
-                    w0 = np.ones(n) / n
-                    
-                    result = minimize(neg_sharpe, w0, method='SLSQP', bounds=bounds, constraints=constraints)
-                    
-                    if result.success:
-                        mv_weights = pd.Series(result.x, index=mu.index)
-                    else:
-                        mv_weights = pd.Series(1.0 / n, index=mu.index)
+                    if mu is not None:
+                        # Apply same constraints as strategy
+                        # Net exposure = 1 (fully invested)
+                        constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+                        
+                        # Bounds: use strategy's min/max weight constraints
+                        bounds = [(self.min_weight, self.max_weight) for _ in range(n)]
+                        
+                        # Gross exposure constraint (relevant when short selling allowed)
+                        if self.allow_short_selling:
+                            constraints.append({
+                                'type': 'ineq', 
+                                'fun': lambda w, gel=self.gross_exposure_limit: gel - np.sum(np.abs(w))
+                            })
+                        
+                        w0 = np.ones(n) / n
+                        result = minimize(objective_func, w0, method='SLSQP', bounds=bounds, constraints=constraints)
+                        
+                        if result.success:
+                            mv_weights = pd.Series(result.x, index=mu.index)
+                        else:
+                            mv_weights = pd.Series(1.0 / n, index=self.asset_list)
                 else:
-                    mv_weights = pd.Series(1.0 / len(self.asset_list), index=self.asset_list)
+                    mv_weights = pd.Series(1.0 / n, index=self.asset_list)
+                
+                # Store weights at this rebalance date
+                weights_history[rebal_date] = mv_weights.copy()
+                
+                # Calculate transaction costs based on actual weight drift since last rebalance
+                if prev_weights is not None:
+                    # prev_weights is the drifted weight, mv_weights is new target
+                    aligned_prev = prev_weights.reindex(mv_weights.index).fillna(0)
+                    turnover = np.sum(np.abs(mv_weights - aligned_prev)) / 2
+                else:
+                    turnover = 1.0  # Initial allocation
+                
+                tc = turnover * current_value * (self.transaction_cost_bps / 10000)
+                current_value -= tc
+                
+                # Reset current_weights to new target weights after rebalance
+                current_weights = mv_weights.copy()
             
-            if mv_weights is None:
-                mv_weights = pd.Series(1.0 / len(self.asset_list), index=self.asset_list)
+            if current_weights is None:
+                current_weights = pd.Series(1.0 / n, index=self.asset_list)
             
             day_returns = asset_returns.loc[day].fillna(0)
-            mv_returns_list.append((mv_weights * day_returns).sum())
+            
+            # Portfolio return using current (possibly drifted) weights
+            port_return = (current_weights * day_returns).sum()
+            mv_returns_list.append(port_return)
+            current_value *= (1 + port_return)
+            mv_values_list.append(current_value)
+            
+            # Update weights based on drift (for next day, and for TC calculation at next rebalance)
+            if abs(1 + port_return) > 1e-10:
+                current_weights = current_weights * (1 + day_returns) / (1 + port_return)
+                current_weights = current_weights / current_weights.sum()  # Normalize
+            
+            # Store drifted weights for transaction cost calculation at next rebalance
+            prev_weights = current_weights.copy()
         
         mv_returns = pd.Series(mv_returns_list, index=backtest_days)
-        mv_values = (1 + mv_returns).cumprod() * self.initial_capital
+        mv_values = pd.Series(mv_values_list[:-1], index=backtest_days)
         
-        name = 'MV Long-Only'
-        self.benchmark_returns[name] = mv_returns
-        self.benchmark_values[name] = mv_values
+        self.benchmark_returns['MV Historical (Rebal)'] = mv_returns
+        self.benchmark_values['MV Historical (Rebal)'] = mv_values
+        
+        # Store weights history as DataFrame
+        if weights_history:
+            self.benchmark_weights['MV Historical (Rebal)'] = pd.DataFrame(weights_history).T
+            self.benchmark_weights['MV Historical (Rebal)'].index.name = 'rebalance_date'
     
     def print_summary(self):
         """Print backtest performance summary."""
@@ -919,7 +1110,7 @@ class BACKTEST:
         format_pct = lambda x: f"{x*100:.2f}%"
         format_ratio = lambda x: f"{x:.3f}"
         
-        print(f"\n{'Metric':<25} {'Strategy':>15} {'S&P 500':>15} {'Equal Weight':>15} {'MV Long-Only':>15}")
+        print(f"\n{'Metric':<25} {'Strategy':>15} {'SPY B&H':>15} {'MV Hist B&H':>15} {'MV Hist Rebal':>15}")
         print("-" * 85)
         
         for metric in ['Total Return', 'Annualized Return', 'Annualized Volatility', 
@@ -944,7 +1135,7 @@ class BACKTEST:
     
     def plot_performance(self, figsize: Tuple[int, int] = (14, 6)):
         """
-        Plot cumulative returns comparing strategy to benchmarks.
+        Plot cumulative portfolio value comparing strategy to benchmarks.
         
         Parameters
         ----------
@@ -959,29 +1150,30 @@ class BACKTEST:
         fig, ax = plt.subplots(figsize=figsize)
         
         colors = {
-            'Strategy': '#2E86AB',
-            'S&P 500': '#A23B72',
-            'Equal Weight': '#F18F01',
-            'MV Long-Only': '#C73E1D'
+            'Strategy': "#003CFF",
+            'SPY Buy & Hold': "#000000",
+            'MV Historical (B&H)': "#FF0000",
+            'MV Historical (Rebal)': "#FFB300"
         }
         
-        # Plot strategy
-        cum_returns = self.portfolio_value / self.initial_capital
-        ax.plot(cum_returns.index, cum_returns.values, label='Strategy', 
+        # Plot strategy - actual portfolio values
+        ax.plot(self.portfolio_value.index, self.portfolio_value.values, label='Strategy', 
                 linewidth=2.5, color=colors['Strategy'])
         
-        # Plot benchmarks
+        # Plot benchmarks - actual values
         for bench_name, bench_values in self.benchmark_values.items():
-            bench_cum = bench_values / self.initial_capital
-            ax.plot(bench_cum.index, bench_cum.values, label=bench_name,
+            ax.plot(bench_values.index, bench_values.values, label=bench_name,
                     linewidth=1.5, alpha=0.8, color=colors.get(bench_name, 'gray'))
         
-        ax.set_title('Cumulative Returns: Strategy vs Benchmarks', fontsize=14, fontweight='bold')
+        ax.set_title('Portfolio Value: Strategy vs Benchmarks', fontsize=14, fontweight='bold')
         ax.set_xlabel('Date')
-        ax.set_ylabel('Growth of $1')
+        ax.set_ylabel(f'Portfolio Value ($)')
         ax.legend(loc='upper left')
         ax.grid(True, alpha=0.3)
-        ax.axhline(y=1, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
+        ax.axhline(y=self.initial_capital, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
+        
+        # Format y-axis as currency
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
         
         plt.tight_layout()
         plt.show()
@@ -1004,10 +1196,10 @@ class BACKTEST:
         fig, axes = plt.subplots(2, 2, figsize=figsize)
         
         colors = {
-            'Strategy': '#2E86AB',
-            'S&P 500': '#A23B72',
-            'Equal Weight': '#F18F01',
-            'MV Long-Only': '#C73E1D'
+            'Strategy': "#003CFF",
+            'SPY Buy & Hold': "#000000",
+            'MV Historical (B&H)': "#FF0000",
+            'MV Historical (Rebal)': "#FFB300"
         }
         
         # 1. Drawdown Comparison
@@ -1121,9 +1313,133 @@ class BACKTEST:
         plt.tight_layout()
         plt.show()
     
+    def plot_efficient_frontier(self, 
+                                 date: Union[str, pd.Timestamp] = None,
+                                 n_points: int = 50,
+                                 show_optimal: bool = True,
+                                 show_assets: bool = True,
+                                 figsize: Tuple[int, int] = (10, 8)):
+        """
+        Plot the efficient frontier for a specific rebalance date.
+        
+        Accesses the stored optimizer from the backtest and plots its efficient frontier
+        based on the expected returns and covariance matrix estimated for that date.
+        
+        Parameters
+        ----------
+        date : str or pd.Timestamp, optional
+            The rebalance date to plot the frontier for. If None, uses the most recent
+            rebalance date. Must be a valid rebalance date from the backtest.
+        n_points : int, default=50
+            Number of points to compute on the efficient frontier
+        show_optimal : bool, default=True
+            Whether to highlight the optimal portfolio chosen by the optimizer
+        show_assets : bool, default=True
+            Whether to plot individual asset risk/return positions
+        figsize : Tuple[int, int], default=(10, 8)
+            Figure size
+            
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The figure object
+            
+        Raises
+        ------
+        ValueError
+            If backtest hasn't been run or date is not a valid rebalance date
+        """
+        if not self._optimizers:
+            raise ValueError("Run backtest first. No optimizers stored.")
+        
+        # Convert date if string
+        if date is None:
+            date = max(self._optimizers.keys())
+        elif isinstance(date, str):
+            date = pd.Timestamp(date)
+        
+        # Check if date is valid
+        if date not in self._optimizers:
+            available_dates = sorted(self._optimizers.keys())
+            raise ValueError(
+                f"Date {date.strftime('%Y-%m-%d')} is not a valid rebalance date. "
+                f"Available dates: {[d.strftime('%Y-%m-%d') for d in available_dates[:5]]}... "
+                f"({len(available_dates)} total)"
+            )
+        
+        # Get the optimizer for this date
+        optimizer = self._optimizers[date]
+        
+        # Call the optimizer's efficient frontier method
+        fig = optimizer.plot_efficient_frontier(
+            n_points=n_points,
+            show_optimal=show_optimal,
+            show_assets=show_assets,
+            figsize=figsize
+        )
+        
+        # Update title to include date
+        ax = fig.axes[0]
+        current_title = ax.get_title()
+        ax.set_title(f"{current_title}\n(Rebalance Date: {date.strftime('%Y-%m-%d')})", 
+                     fontsize=12, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig
+    
+    def list_rebalance_dates(self) -> List[pd.Timestamp]:
+        """
+        Get list of all rebalance dates that have stored optimizers.
+        
+        Returns
+        -------
+        List[pd.Timestamp]
+            Sorted list of rebalance dates
+        """
+        return sorted(self._optimizers.keys())
+    
     # ====================================================================================
     # UTILITY METHODS
     # ====================================================================================
+    
+    def get_benchmark_weights(self, benchmark: str = None) -> Dict[str, pd.DataFrame]:
+        """
+        Get portfolio weights for benchmark portfolios.
+        
+        Parameters
+        ----------
+        benchmark : str, optional
+            Specific benchmark to retrieve. Options:
+            - 'SPY Buy & Hold': 100% SPY allocation
+            - 'MV Historical (B&H)': Mean-variance optimized once at start
+            - 'MV Historical (Rebal)': Mean-variance rebalanced at same frequency
+            If None, returns all benchmark weights.
+            
+        Returns
+        -------
+        Dict[str, pd.DataFrame] or pd.DataFrame
+            If benchmark is None: Dictionary mapping benchmark names to weight DataFrames
+            If benchmark is specified: DataFrame with weights (rows=dates, columns=assets)
+            
+        Raises
+        ------
+        ValueError
+            If backtest hasn't been run or benchmark name is invalid
+        """
+        if self.benchmark_weights is None:
+            # Trigger benchmark computation
+            self._compute_benchmarks()
+        
+        if benchmark is None:
+            return self.benchmark_weights
+        
+        if benchmark not in self.benchmark_weights:
+            available = list(self.benchmark_weights.keys())
+            raise ValueError(f"Unknown benchmark '{benchmark}'. Available: {available}")
+        
+        return self.benchmark_weights[benchmark]
     
     def get_trades(self) -> pd.DataFrame:
         """

@@ -690,3 +690,236 @@ class PORTFOLIO_OPTIMIZER:
             Sigma=analytical_inputs.Sigma,
             risk_free_rate=rf
         )
+
+    def plot_efficient_frontier(
+        self,
+        n_points: int = 50,
+        show_assets: bool = True,
+        show_optimal: bool = True,
+        show_capital_market_line: bool = True,
+        allow_short_selling: bool = False,
+        gross_exposure_limit: float = 1.0,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
+        figsize: Tuple[int, int] = (12, 8),
+        title: Optional[str] = None
+    ):
+        """
+        Plot the efficient frontier with optional capital market line and individual assets.
+        
+        Parameters
+        ----------
+        n_points : int, default=50
+            Number of points to compute on the efficient frontier
+        show_assets : bool, default=True
+            Whether to show individual assets on the plot
+        show_optimal : bool, default=True
+            Whether to highlight the current optimal portfolio (if computed)
+        show_capital_market_line : bool, default=True
+            Whether to show the capital market line (tangent from risk-free rate)
+        allow_short_selling : bool, default=False
+            Whether to allow short selling when computing frontier
+        gross_exposure_limit : float, default=1.0
+            Gross exposure limit for short selling
+        min_weight : float, default=0.0
+            Minimum weight per asset
+        max_weight : float, default=1.0
+            Maximum weight per asset
+        figsize : Tuple[int, int], default=(12, 8)
+            Figure size
+        title : str, optional
+            Custom title for the plot
+        """
+        import matplotlib.pyplot as plt
+        
+        # Compute efficient frontier points
+        frontier_vols, frontier_rets, frontier_weights = self._compute_efficient_frontier(
+            n_points=n_points,
+            allow_short_selling=allow_short_selling,
+            gross_exposure_limit=gross_exposure_limit,
+            min_weight=min_weight,
+            max_weight=max_weight
+        )
+        
+        # Find the max Sharpe portfolio on the frontier
+        sharpe_ratios = (frontier_rets - self.risk_free_rate) / frontier_vols
+        max_sharpe_idx = np.argmax(sharpe_ratios)
+        max_sharpe_ret = frontier_rets[max_sharpe_idx]
+        max_sharpe_vol = frontier_vols[max_sharpe_idx]
+        max_sharpe = sharpe_ratios[max_sharpe_idx]
+        
+        # Find minimum variance portfolio
+        min_var_idx = np.argmin(frontier_vols)
+        min_var_ret = frontier_rets[min_var_idx]
+        min_var_vol = frontier_vols[min_var_idx]
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Plot efficient frontier
+        ax.plot(frontier_vols, frontier_rets, 'b-', linewidth=2.5, label='Efficient Frontier')
+        
+        # Plot individual assets
+        if show_assets:
+            asset_vols = np.sqrt(np.diag(self.Sigma.values))
+            asset_rets = self.mu.values
+            ax.scatter(asset_vols, asset_rets, c='gray', s=80, alpha=0.7, 
+                      edgecolors='black', linewidths=1, zorder=5)
+            
+            # Label assets
+            for i, asset in enumerate(self.assets):
+                # Truncate long names
+                label = asset[:20] + '...' if len(asset) > 20 else asset
+                ax.annotate(label, (asset_vols[i], asset_rets[i]), 
+                           fontsize=8, alpha=0.7,
+                           xytext=(5, 5), textcoords='offset points')
+        
+        # Plot minimum variance portfolio
+        ax.scatter([min_var_vol], [min_var_ret], c='green', s=150, marker='s',
+                  edgecolors='black', linewidths=2, zorder=10, label='Min Variance')
+        
+        # Plot max Sharpe portfolio
+        ax.scatter([max_sharpe_vol], [max_sharpe_ret], c='red', s=150, marker='*',
+                  edgecolors='black', linewidths=1, zorder=10, 
+                  label=f'Max Sharpe (SR={max_sharpe:.2f})')
+        
+        # Plot capital market line
+        if show_capital_market_line:
+            # CML from risk-free rate tangent to efficient frontier
+            cml_x = np.linspace(0, max(frontier_vols) * 1.2, 100)
+            cml_y = self.risk_free_rate + max_sharpe * cml_x
+            ax.plot(cml_x, cml_y, 'r--', linewidth=1.5, alpha=0.7, 
+                   label='Capital Market Line')
+            
+            # Plot risk-free rate point
+            ax.scatter([0], [self.risk_free_rate], c='gold', s=100, marker='D',
+                      edgecolors='black', linewidths=1, zorder=10,
+                      label=f'Risk-Free Rate ({self.risk_free_rate:.1%})')
+        
+        # Plot current optimal portfolio if computed
+        if show_optimal and self.optimal_weights is not None:
+            ax.scatter([self.portfolio_volatility], [self.portfolio_return], 
+                      c='blue', s=200, marker='o', edgecolors='white', linewidths=2,
+                      zorder=15, label=f'Current Optimal ({self._objective_used})')
+        
+        # Formatting
+        ax.set_xlabel('Annualized Volatility', fontsize=12)
+        ax.set_ylabel('Annualized Expected Return', fontsize=12)
+        
+        if title:
+            ax.set_title(title, fontsize=14, fontweight='bold')
+        else:
+            ax.set_title('Efficient Frontier', fontsize=14, fontweight='bold')
+        
+        ax.legend(loc='upper left', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        # Format axes as percentages
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0%}'))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0%}'))
+        
+        # Set axis limits with some padding
+        ax.set_xlim(left=0)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig, ax
+    
+    def _compute_efficient_frontier(
+        self,
+        n_points: int = 50,
+        allow_short_selling: bool = False,
+        gross_exposure_limit: float = 1.0,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0
+    ) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+        """
+        Compute points on the efficient frontier.
+        
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, List[np.ndarray]]
+            (volatilities, returns, list of weight vectors)
+        """
+        from scipy.optimize import minimize
+        
+        n = self.n_assets
+        mu = self.mu.values
+        Sigma = self.Sigma.values
+        
+        # Handle constraints
+        if not allow_short_selling:
+            min_weight = 0.0
+            bounds = [(0.0, max_weight) for _ in range(n)]
+        else:
+            bounds = [(min_weight, max_weight) for _ in range(n)]
+        
+        # First, find the range of achievable returns
+        # Min return portfolio
+        def neg_return(w):
+            return -np.dot(w, mu)
+        
+        constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+        if allow_short_selling and gross_exposure_limit < 2.0:
+            constraints.append({
+                'type': 'ineq',
+                'fun': lambda w: gross_exposure_limit - np.sum(np.abs(w))
+            })
+        
+        w0 = np.ones(n) / n
+        
+        # Find min return
+        result_min = minimize(neg_return, w0, method='SLSQP', bounds=bounds, constraints=constraints)
+        if result_min.success:
+            min_ret = np.dot(result_min.x, mu)
+        else:
+            min_ret = np.min(mu)
+        
+        # Find max return
+        def pos_return(w):
+            return np.dot(w, mu)
+        
+        result_max = minimize(lambda w: -pos_return(w), w0, method='SLSQP', bounds=bounds, constraints=constraints)
+        if result_max.success:
+            max_ret = np.dot(result_max.x, mu)
+        else:
+            max_ret = np.max(mu)
+        
+        # Generate target returns
+        target_returns = np.linspace(min_ret, max_ret, n_points)
+        
+        frontier_vols = []
+        frontier_rets = []
+        frontier_weights = []
+        
+        for target in target_returns:
+            # Minimize variance subject to target return
+            def portfolio_variance(w):
+                return np.dot(w, np.dot(Sigma, w))
+            
+            constraints_with_target = [
+                {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0},
+                {'type': 'eq', 'fun': lambda w, t=target: np.dot(w, mu) - t}
+            ]
+            
+            if allow_short_selling and gross_exposure_limit < 2.0:
+                constraints_with_target.append({
+                    'type': 'ineq',
+                    'fun': lambda w: gross_exposure_limit - np.sum(np.abs(w))
+                })
+            
+            result = minimize(portfolio_variance, w0, method='SLSQP', 
+                            bounds=bounds, constraints=constraints_with_target,
+                            options={'maxiter': 1000})
+            
+            if result.success:
+                w_opt = result.x
+                vol = np.sqrt(np.dot(w_opt, np.dot(Sigma, w_opt)))
+                ret = np.dot(w_opt, mu)
+                
+                frontier_vols.append(vol)
+                frontier_rets.append(ret)
+                frontier_weights.append(w_opt)
+        
+        return np.array(frontier_vols), np.array(frontier_rets), frontier_weights
