@@ -856,7 +856,7 @@ class BACKTEST:
         self.benchmark_weights['SPY Buy & Hold'] = pd.DataFrame([spy_weights], index=[backtest_days[0]])
         
         # === 2. MV Historical Buy & Hold ===
-        self._compute_mv_buy_and_hold_benchmark(lookback_days)
+        # self._compute_mv_buy_and_hold_benchmark(lookback_days)
         
         # === 3. MV Historical Rebalanced (same constraints) ===
         self._compute_mv_rebalanced_benchmark(lookback_days)
@@ -1110,7 +1110,7 @@ class BACKTEST:
         format_pct = lambda x: f"{x*100:.2f}%"
         format_ratio = lambda x: f"{x:.3f}"
         
-        print(f"\n{'Metric':<25} {'Strategy':>15} {'SPY B&H':>15} {'MV Hist B&H':>15} {'MV Hist Rebal':>15}")
+        print(f"\n{'Metric':<25} {'Strategy':>15} {'SPY B&H':>15} {'MV Hist Rebal':>15}")
         print("-" * 85)
         
         for metric in ['Total Return', 'Annualized Return', 'Annualized Volatility', 
