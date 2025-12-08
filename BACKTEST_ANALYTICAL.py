@@ -582,6 +582,10 @@ class BACKTEST:
                     risk_aversion=self.risk_aversion,
                     verbose=False
                 )
+
+                # Store optimization objects for analysis
+                self._optimization_inputs[rebal_date] = inputs
+                self._optimizers[rebal_date] = optimizer
                 
                 return (rebal_date, weights, optimizer.portfolio_return, optimizer.portfolio_volatility, None)
                 
@@ -1152,7 +1156,7 @@ class BACKTEST:
         colors = {
             'Strategy': "#003CFF",
             'SPY Buy & Hold': "#000000",
-            'MV Historical (B&H)': "#FF0000",
+            # 'MV Historical (B&H)': "#FF0000",
             'MV Historical (Rebal)': "#FFB300"
         }
         
