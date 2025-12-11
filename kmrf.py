@@ -21,6 +21,7 @@ import warnings
 import pickle
 from glob import glob
 import matplotlib.pyplot as plt
+from CODE_data_collection_and_processing.ASSET_SYMBOLS import *
 
 # Import the TimeSeriesDerivedFields class for feature engineering
 # import derive_features as dd # feature engineering is completed in feature_engineering.ipynb and saved in 'ready' data 
@@ -284,43 +285,48 @@ class KMRF:
             else:
                 self.raw_ohlc = None
         else:
+
+            '''
             us_equity_symbol_names = {
                 # BOND ETFS
-                'BIL': 'SPDR Bloomberg 1-3 Month T-Bill ETF',
-                'SHY': 'iShares 1-3 Year Treasury Bond ETF',
-                'IEF': 'iShares 7-10 Year Treasury Bond ETF',
-
+                # 'BIL': 'SPDR Bloomberg 1-3 Month T-Bill ETF',
+                # 'SHY': 'iShares 1-3 Year Treasury Bond ETF',
+                # 'IEF': 'iShares 7-10 Year Treasury Bond ETF',
+                
                 # MAJOR INDICES
                 '^GSPC': 'S&P 500',
                 '^IXIC': 'Nasdaq Composite',
                 '^NDX': 'Nasdaq 100',
                 '^RUT': 'Russell 2000',
                 '^DJI': 'Dow Jones Industrial Average',
-                '^RUI': 'Russell 1000',
-                '^RUA': 'Russell 3000',
-
+                
                 # Commodity ETFs
                 'GLD': 'SPDR Gold Shares',
                 'SLV': 'iShares Silver Trust',
                 'USO': 'United States Oil Fund',
                 'UNG': 'United States Natural Gas Fund',
                 'DBA': 'Invesco DB Agriculture',
+                'CPER': 'United States Copper Index Fund',
+                'DBB': 'Invesco DB Base Metals',
+                'PALL': 'abrdn Palladium Shares ETF',
+                'PLTM': 'GraniteShares Platinum Trust',
+                'WEAT': 'Teucrium Wheat Fund',
+                'SOYB': 'Teucrium Soybean Fund',
+                'CORN': 'Teucrium Corn Fund',
+                'CANE': 'Teucrium Sugar Fund',
                 
                 # MAIN BROAD MARKET ETFS
                 'SPY': 'SPDR S&P 500 ETF',
-                'VOO': 'Vanguard S&P 500 ETF',
-                'RSP': 'Invesco S&P 500 Equal Weight ETF',
-                'IVV': 'iShares Core S&P 500 ETF',
+                # 'VOO': 'Vanguard S&P 500 ETF',
+                # 'RSP': 'Invesco S&P 500 Equal Weight ETF',
+                # 'IVV': 'iShares Core S&P 500 ETF',
                 'QQQ': 'Invesco QQQ Trust',
-                'QQQM': 'Invesco Nasdaq 100 ETF',
-                'ONEQ': 'Fidelity Nasdaq Composite Index ETF',
                 'IWM': 'iShares Russell 2000 ETF',
-                'IWB': 'iShares Russell 1000 ETF',
-                'IWV': 'iShares Russell 3000 ETF',
+                # 'IWB': 'iShares Russell 1000 ETF',
                 'DIA': 'SPDR Dow Jones Industrial Average ETF',
-                'VTI': 'Vanguard Total Stock Market ETF',
+                # 'VTI': 'Vanguard Total Stock Market ETF',
                 
-                # S&P 500 SECTOR ETFS (SELECT SECTOR SPDRS)
+                # S&P 500 SECTOR ETFS
                 'XLE': 'Energy Select Sector SPDR',
                 'XLF': 'Financial Select Sector SPDR',
                 'XLU': 'Utilities Select Sector SPDR',
@@ -330,62 +336,46 @@ class KMRF:
                 'XLB': 'Materials Select Sector SPDR',
                 'XLY': 'Consumer Discretionary Select Sector SPDR',
                 'XLP': 'Consumer Staples Select Sector SPDR',
-                'XLRE': 'Real Estate Select Sector SPDR',
-                'XLC': 'Communication Services Select Sector SPDR',
-
+                # 'XLRE': 'Real Estate Select Sector SPDR',
+                # 'XLC': 'Communication Services Select Sector SPDR',
                 'IYR': 'iShares U.S. Real Estate ETF',
-
+                'IYZ': 'iShares U.S. Telecommunications ETF',
                 
                 # GROWTH ETFs
+                'MGK': 'Vanguard Mega Cap Growth ETF',
                 'IVW': 'iShares S&P 500 Growth ETF',
-                'VONG': 'Vanguard Russell 1000 Growth ETF',
-                'IWF': 'iShares Russell 1000 Growth ETF',
+                # 'IWF': 'iShares Russell 1000 Growth ETF',
                 'IWO': 'iShares Russell 2000 Growth ETF',
-                'VUG': 'Vanguard Growth ETF',
-                'SPYG': 'SPDR Portfolio S&P 500 Growth ETF',
+                # 'VUG': 'Vanguard Growth ETF',
                 
                 # VALUE ETFs
+                'MGV': 'Vanguard Mega Cap Value ETF',
                 'IVE': 'iShares S&P 500 Value ETF',
-                'VONV': 'Vanguard Russell 1000 Value ETF',
-                'IWD': 'iShares Russell 1000 Value ETF',
+                # 'IWD': 'iShares Russell 1000 Value ETF',
                 'IWN': 'iShares Russell 2000 Value ETF',
-                'VTV': 'Vanguard Value ETF',
-                'SPYV': 'SPDR Portfolio S&P 500 Value ETF',
+                # 'VTV': 'Vanguard Value ETF',
                 
                 # SIZE ETFs
+                'OEF': 'iShares S&P 100 ETF',
                 'IWR': 'iShares Russell Mid-Cap ETF',
                 'IWC': 'iShares Micro-Cap ETF',
-                'IJH': 'iShares Core S&P Mid-Cap ETF',
-                'IJR': 'iShares Core S&P Small-Cap ETF',
-                'MDY': 'SPDR S&P MidCap 400 ETF',
-                'SLY': 'SPDR S&P 600 Small Cap ETF',
-                'VO': 'Vanguard Mid-Cap ETF',
-                'VB': 'Vanguard Small-Cap ETF',
-                'SCHA': 'Schwab U.S. Small-Cap ETF',
-                'SCHM': 'Schwab U.S. Mid-Cap ETF',
-                'VTWO': 'Vanguard Russell 2000 ETF',
-                'VTHR': 'Vanguard Russell 3000 ETF',
-                'THRK': 'iShares Russell 3000 ETF',
-                'SPSM': 'SPDR Portfolio S&P 600 Small Cap ETF',
-                'SMLF': 'iShares Small-Cap US Equity Factor ETF',
+                # 'IJH': 'iShares Core S&P Mid-Cap ETF',
+                # 'IJR': 'iShares Core S&P Small-Cap ETF',
+                # 'MDY': 'SPDR S&P MidCap 400 ETF',
                 
-                # NASDAQ SPECIFIC
-                'QTEC': 'First Trust Nasdaq-100 Technology Sector Index Fund',
-                'QQEW': 'First Trust Nasdaq-100 Equal Weighted Index Fund',
-                'QQQG': 'Pacer Nasdaq 100 Top 50 Cash Cows Dividend Growth ETF',
-                'QQQV': 'Pacer Nasdaq 100 Top 50 Value ETF',
-                
-                # DIVIDEND/QUALITY
-                'SCHD': 'Schwab U.S. Dividend Equity ETF',
-                'VYM': 'Vanguard High Dividend Yield ETF',
-                'DVY': 'iShares Select Dividend ETF',
-                'QUAL': 'iShares MSCI USA Quality Factor ETF',
-                'USMV': 'iShares MSCI USA Min Vol Factor ETF',
-                
-                # EQUAL WEIGHT
-                'EWSC': 'Invesco S&P SmallCap 600 Equal Weight ETF',
-                'EWMC': 'Invesco S&P MidCap 400 Equal Weight ETF',
+                # INTERNATIONAL
+                # 'VXUS': 'Vanguard Total International Stock ETF',
+                'VEA': 'Vanguard FTSE Developed Markets ETF',
+                'VWO': 'Vanguard FTSE Emerging Markets ETF',
+                'VGK': 'Vanguard FTSE Europe ETF',
+                # 'VPL': 'Vanguard FTSE Pacific ETF',
+                'FXI': 'iShares China Large-Cap ETF',
+                'EWJ': 'iShares MSCI Japan ETF',
+                'INDA': 'iShares MSCI India ETF',
+                # 'EFA': 'iShares MSCI EAFE ETF',
+                'EEM': 'iShares MSCI Emerging Markets ETF',
             }
+
             int_equity_symbol_names = {
                 'VXUS': 'Vanguard Total International Stock ETF',
                 'VEA': 'Vanguard FTSE Developed Markets ETF',
@@ -396,12 +386,7 @@ class KMRF:
                 'EWJ': 'iShares MSCI Japan ETF',
                 'INDA': 'iShares MSCI India ETF',
             }
-            etf_symbol_name_dict = {**us_equity_symbol_names, **int_equity_symbol_names}
-
-            fmp_comm = pd.read_csv(BASE_DIR / 'data/inputs/fmp_commodity_list.csv')
-            comm_symbol_name_dict = fmp_comm.set_index('symbol')['name'].to_dict()
-            comm_symbol_name_dict.update({'Nickel': 'Nickel'})
-
+            '''
             universe_symbol_name_dict = {
                 'IVV': 'IVV - iShares Core S&P 500 ETF',
                 'IJH': 'IJH - iShares Core S&P Mid-Cap ETF',
@@ -417,6 +402,14 @@ class KMRF:
                 'GLD': 'GLD - SPDR Gold Shares',
             }
             
+            # etf_symbol_name_dict = {**us_equity_symbol_names, **int_equity_symbol_names}
+            etf_symbol_name_dict = ETF_SYMBOL_NAMES
+
+            fmp_comm = pd.read_csv(BASE_DIR / 'data/inputs/fmp_commodity_list.csv')
+            comm_symbol_name_dict = fmp_comm.set_index('symbol')['name'].to_dict()
+            comm_symbol_name_dict.update({'Nickel': 'Nickel'})
+
+
             if self.asset_class == 'universe':
                 raw_price_data = pd.read_csv(BASE_DIR / 'data/processed/universe_etfs.csv', index_col=0, header=[0, 1], parse_dates=True)
                 raw_price_data.index = pd.to_datetime(raw_price_data.index)

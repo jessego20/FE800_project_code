@@ -500,6 +500,55 @@ class BACKTEST:
         
         return self
     
+    def optimize_for_date(self, rebal_date: pd.Timestamp, rf_rates: dict) -> Tuple[pd.Timestamp, pd.Series, Optional[float], Optional[float], Optional[Exception]]:
+        """
+        Run optimization for a single rebalance date.
+        
+        Returns tuple of (date, weights, expected_return, expected_vol, error)
+        """
+        try:
+            # Run ANALYTICAL_INPUTS pipeline
+            inputs = ANALYTICAL_INPUTS(
+                opt_date=rebal_date.strftime('%Y%m%d'),
+                asset_list=self.asset_list,
+                n_days=self.n_days,
+                annualize=True
+            )
+            inputs.run_full_pipeline(verbose=False)
+            
+            # Get risk-free rate
+            rf_rate = rf_rates[rebal_date]
+            
+            # Create optimizer
+            optimizer = PORTFOLIO_OPTIMIZER.from_analytical_inputs(
+                analytical_inputs=inputs,
+                risk_free_rate=rf_rate
+            )
+            
+            # Run optimization (without turnover constraint - will be applied in sequential pass if needed)
+            weights = optimizer.optimize(
+                objective=self.objective,
+                min_weight=self.min_weight,
+                max_weight=self.max_weight,
+                allow_short_selling=self.allow_short_selling,
+                gross_exposure_limit=self.gross_exposure_limit,
+                max_turnover=None,  # Can't apply turnover in parallel
+                previous_weights=None,
+                risk_aversion=self.risk_aversion,
+                verbose=False
+            )
+
+            # Store optimization objects for analysis
+            self._optimization_inputs[rebal_date] = inputs
+            self._optimizers[rebal_date] = optimizer
+            
+            return (rebal_date, weights, optimizer.portfolio_return, optimizer.portfolio_volatility, None)
+            
+        except Exception as e:
+            # Return equal weights as fallback
+            weights = pd.Series(1.0 / len(self.asset_list), index=self.asset_list)
+            return (rebal_date, weights, None, None, e)
+
     def run_parallel(self, n_jobs: int = -1, verbose: bool = True) -> 'BACKTEST':
         """
         Execute the backtest with parallelized optimization computations.
@@ -547,62 +596,12 @@ class BACKTEST:
         # Pre-compute risk-free rates for all dates
         rf_rates = {date: self._get_rf_rate(date) for date in self.rebalance_dates}
         
-        # Define the optimization function for a single rebalance date
-        def optimize_for_date(rebal_date: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Series, Optional[float], Optional[float], Optional[Exception]]:
-            """
-            Run optimization for a single rebalance date.
-            
-            Returns tuple of (date, weights, expected_return, expected_vol, error)
-            """
-            try:
-                # Run ANALYTICAL_INPUTS pipeline
-                inputs = ANALYTICAL_INPUTS(
-                    opt_date=rebal_date.strftime('%Y%m%d'),
-                    asset_list=self.asset_list,
-                    n_days=self.n_days,
-                    annualize=True
-                )
-                inputs.run_full_pipeline(verbose=False)
-                
-                # Get risk-free rate
-                rf_rate = rf_rates[rebal_date]
-                
-                # Create optimizer
-                optimizer = PORTFOLIO_OPTIMIZER.from_analytical_inputs(
-                    analytical_inputs=inputs,
-                    risk_free_rate=rf_rate
-                )
-                
-                # Run optimization (without turnover constraint - will be applied in sequential pass if needed)
-                weights = optimizer.optimize(
-                    objective=self.objective,
-                    min_weight=self.min_weight,
-                    max_weight=self.max_weight,
-                    allow_short_selling=self.allow_short_selling,
-                    gross_exposure_limit=self.gross_exposure_limit,
-                    max_turnover=None,  # Can't apply turnover in parallel
-                    previous_weights=None,
-                    risk_aversion=self.risk_aversion,
-                    verbose=False
-                )
-
-                # Store optimization objects for analysis
-                self._optimization_inputs[rebal_date] = inputs
-                self._optimizers[rebal_date] = optimizer
-                
-                return (rebal_date, weights, optimizer.portfolio_return, optimizer.portfolio_volatility, None)
-                
-            except Exception as e:
-                # Return equal weights as fallback
-                weights = pd.Series(1.0 / len(self.asset_list), index=self.asset_list)
-                return (rebal_date, weights, None, None, e)
-        
         # Run optimizations in parallel
         if verbose:
             print("  Computing optimizations in parallel...")
         
         results = Parallel(n_jobs=n_jobs, verbose=10 if verbose else 0)(
-            delayed(optimize_for_date)(date) for date in self.rebalance_dates
+            delayed(self.optimize_for_date)(date, rf_rates) for date in self.rebalance_dates
         )
         
         # Sort results by date and extract weights
@@ -755,7 +754,84 @@ class BACKTEST:
     # PERFORMANCE METRICS
     # ====================================================================================
     
-    def get_metrics(self, include_benchmarks: bool = True) -> pd.DataFrame:
+    def _filter_by_date_range(
+        self,
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ) -> Tuple[pd.Series, pd.Series, pd.Timestamp, pd.Timestamp]:
+        """
+        Filter backtest returns and values by date range.
+        
+        Parameters
+        ----------
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) - should be a rebalance date. Returns start the day after.
+            If not a rebalance date, uses the next rebalance date after this date.
+            If None, uses the first date in the backtest.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive). If None, uses the last date in the backtest.
+            
+        Returns
+        -------
+        filtered_returns : pd.Series
+            Returns for the specified period
+        filtered_values : pd.Series
+            Portfolio values starting at $10,000 for the specified period
+        actual_start : pd.Timestamp
+            The actual start rebalance date used (may differ from input)
+        actual_end : pd.Timestamp
+            The actual end date used
+        """
+        if self.returns is None or len(self.returns) == 0:
+            raise ValueError("Must run backtest first")
+        
+        # Convert dates
+        if start_date is not None:
+            start_date = pd.Timestamp(start_date)
+        if end_date is not None:
+            end_date = pd.Timestamp(end_date)
+        
+        # Find actual start rebalance date
+        if start_date is not None:
+            # Find nearest rebalance date on or after start_date
+            valid_rebal_dates = [d for d in self.rebalance_dates if d >= start_date]
+            if not valid_rebal_dates:
+                raise ValueError(f"No rebalance dates on or after {start_date}")
+            actual_start = valid_rebal_dates[0]
+        else:
+            actual_start = self.rebalance_dates[0]
+        
+        # Determine actual end date
+        if end_date is not None:
+            actual_end = end_date
+        else:
+            actual_end = self.returns.index[-1]
+        
+        # Filter returns: start after the rebalance date, end on or before end_date
+        returns_mask = (self.returns.index > actual_start) & (self.returns.index <= actual_end)
+        filtered_returns = self.returns[returns_mask]
+        
+        if len(filtered_returns) == 0:
+            raise ValueError(f"No returns found between {actual_start} and {actual_end}")
+        
+        # Reconstruct portfolio values starting at $10,000
+        cumulative_returns = (1 + filtered_returns).cumprod()
+        filtered_values = cumulative_returns * 10000
+        
+        # Prepend the starting value at the start rebalance date
+        filtered_values = pd.concat([
+            pd.Series([10000], index=[actual_start]),
+            filtered_values
+        ])
+        
+        return filtered_returns, filtered_values, actual_start, actual_end
+    
+    def get_metrics(
+        self,
+        include_benchmarks: bool = True,
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ) -> pd.DataFrame:
         """
         Get comprehensive performance metrics.
         
@@ -763,6 +839,12 @@ class BACKTEST:
         ----------
         include_benchmarks : bool, default=True
             Whether to include benchmark comparisons
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) for evaluation period. Should be a rebalance date.
+            If None, uses full backtest period.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive) for evaluation period.
+            If None, uses full backtest period.
             
         Returns
         -------
@@ -771,6 +853,15 @@ class BACKTEST:
         """
         if self.returns is None or len(self.returns) == 0:
             raise ValueError("Must run backtest first")
+        
+        # Filter data if dates provided
+        if start_date is not None or end_date is not None:
+            strategy_returns, strategy_values, actual_start, actual_end = self._filter_by_date_range(start_date, end_date)
+        else:
+            strategy_returns = self.returns
+            strategy_values = self.portfolio_value
+            actual_start = self.rebalance_dates[0]
+            actual_end = self.returns.index[-1]
         
         def calc_metrics(returns: pd.Series, values: pd.Series, name: str) -> Dict:
             """Calculate metrics for a single return series."""
@@ -819,13 +910,26 @@ class BACKTEST:
         
         # Calculate strategy metrics
         results = {}
-        results['Strategy'] = calc_metrics(self.returns, self.portfolio_value, 'Strategy')
+        results['Strategy'] = calc_metrics(strategy_returns, strategy_values, 'Strategy')
         
         if include_benchmarks:
             self._compute_benchmarks()
             for bench_name, bench_returns in self.benchmark_returns.items():
-                bench_values = self.benchmark_values[bench_name]
-                results[bench_name] = calc_metrics(bench_returns, bench_values, bench_name)
+                # Filter benchmark data to same period
+                if start_date is not None or end_date is not None:
+                    bench_mask = (bench_returns.index > actual_start) & (bench_returns.index <= actual_end)
+                    filtered_bench_returns = bench_returns[bench_mask]
+                    if len(filtered_bench_returns) > 0:
+                        cumulative = (1 + filtered_bench_returns).cumprod()
+                        filtered_bench_values = cumulative * 10000
+                        filtered_bench_values = pd.concat([
+                            pd.Series([10000], index=[actual_start]),
+                            filtered_bench_values
+                        ])
+                        results[bench_name] = calc_metrics(filtered_bench_returns, filtered_bench_values, bench_name)
+                else:
+                    bench_values = self.benchmark_values[bench_name]
+                    results[bench_name] = calc_metrics(bench_returns, bench_values, bench_name)
         
         return pd.DataFrame(results)
     
@@ -1097,21 +1201,61 @@ class BACKTEST:
             self.benchmark_weights['MV Historical (Rebal)'] = pd.DataFrame(weights_history).T
             self.benchmark_weights['MV Historical (Rebal)'].index.name = 'rebalance_date'
     
-    def print_summary(self):
-        """Print backtest performance summary."""
+    def print_summary(
+        self,
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ):
+        """
+        Print backtest performance summary.
+        
+        Parameters
+        ----------
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) for evaluation period. Should be a rebalance date.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive) for evaluation period.
+        """
         if self.returns is None or len(self.returns) == 0:
             print("No returns calculated yet. Run backtest first.")
             return
         
-        metrics = self.get_metrics(include_benchmarks=True)
-        
-        print(f"\n{'='*80}")
-        print("BACKTEST PERFORMANCE SUMMARY")
-        print(f"{'='*80}")
-        print(f"Period: {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}")
-        print(f"Trading Days: {len(self.returns)}")
-        print(f"Rebalances: {len(self.rebalance_dates)}")
-        print(f"{'='*80}")
+        # Get filtered data and metrics
+        if start_date is not None or end_date is not None:
+            filtered_returns, _, actual_start, actual_end = self._filter_by_date_range(start_date, end_date)
+            metrics = self.get_metrics(include_benchmarks=True, start_date=start_date, end_date=end_date)
+            
+            # Count rebalances in the period
+            rebal_mask = (pd.Series(self.rebalance_dates) > actual_start) & (pd.Series(self.rebalance_dates) <= actual_end)
+            n_rebalances = rebal_mask.sum()
+            
+            # Filter transaction costs and turnover to the evaluation period
+            tc_mask = (self.transaction_costs.index > actual_start) & (self.transaction_costs.index <= actual_end)
+            filtered_tc = self.transaction_costs[tc_mask]
+            
+            turnover_mask = (self.turnover_history.index > actual_start) & (self.turnover_history.index <= actual_end)
+            filtered_turnover = self.turnover_history[turnover_mask]
+            
+            print(f"\n{'='*80}")
+            print("BACKTEST PERFORMANCE SUMMARY")
+            print(f"{'='*80}")
+            print(f"Evaluation Period: {actual_start.strftime('%Y-%m-%d')} to {actual_end.strftime('%Y-%m-%d')}")
+            print(f"(Full Backtest: {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')})")
+            print(f"Trading Days: {len(filtered_returns)}")
+            print(f"Rebalances: {n_rebalances}")
+            print(f"{'='*80}")
+        else:
+            metrics = self.get_metrics(include_benchmarks=True)
+            filtered_tc = self.transaction_costs
+            filtered_turnover = self.turnover_history
+            
+            print(f"\n{'='*80}")
+            print("BACKTEST PERFORMANCE SUMMARY")
+            print(f"{'='*80}")
+            print(f"Period: {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}")
+            print(f"Trading Days: {len(self.returns)}")
+            print(f"Rebalances: {len(self.rebalance_dates)}")
+            print(f"{'='*80}")
         
         # Format and print metrics
         format_pct = lambda x: f"{x*100:.2f}%"
@@ -1121,26 +1265,32 @@ class BACKTEST:
         print("-" * 85)
         
         for metric in ['Total Return', 'Annualized Return', 'Annualized Volatility', 
-                       'Sharpe Ratio', 'Sortino Ratio', 'Max Drawdown', 'Win Rate']:
+                       'Sharpe Ratio', 'Sortino Ratio', 'Max Drawdown', 'Calmar Ratio', 'Win Rate',
+                       'Avg Daily Return', 'Skewness', 'Kurtosis']:
             row = f"{metric:<25}"
             for col in metrics.columns:
                 val = metrics.loc[metric, col]
-                if metric in ['Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio']:
+                if metric in ['Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Skewness', 'Kurtosis']:
                     row += f" {format_ratio(val):>15}"
                 else:
                     row += f" {format_pct(val):>15}"
             print(row)
         
         print(f"\n{'='*80}")
-        print(f"Total Transaction Costs: ${self.transaction_costs.sum():,.2f}")
-        print(f"Average Turnover per Rebalance: {self.turnover_history.mean():.2%}")
+        print(f"Total Transaction Costs: ${filtered_tc.sum():,.2f}")
+        print(f"Average Turnover per Rebalance: {filtered_turnover.mean():.2%}")
         print(f"{'='*80}")
     
     # ====================================================================================
     # VISUALIZATION
     # ====================================================================================
     
-    def plot_performance(self, figsize: Tuple[int, int] = (14, 6)):
+    def plot_performance(
+        self,
+        figsize: Tuple[int, int] = (14, 6),
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ):
         """
         Plot cumulative portfolio value comparing strategy to benchmarks.
         
@@ -1148,9 +1298,22 @@ class BACKTEST:
         ----------
         figsize : Tuple[int, int], default=(14, 6)
             Figure size
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) for evaluation period. Should be a rebalance date.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive) for evaluation period.
         """
         if self.portfolio_value is None:
             raise ValueError("Run backtest first")
+        
+        # Filter data if dates provided
+        if start_date is not None or end_date is not None:
+            strategy_returns, strategy_values, actual_start, actual_end = self._filter_by_date_range(start_date, end_date)
+        else:
+            strategy_returns = self.returns
+            strategy_values = self.portfolio_value
+            actual_start = self.rebalance_dates[0]
+            actual_end = self.returns.index[-1]
         
         self._compute_benchmarks()
         
@@ -1164,20 +1327,37 @@ class BACKTEST:
         }
         
         # Plot strategy - actual portfolio values
-        ax.plot(self.portfolio_value.index, self.portfolio_value.values, label='Strategy', 
+        ax.plot(strategy_values.index, strategy_values.values, label='Strategy', 
                 linewidth=2.5, color=colors['Strategy'])
         
-        # Plot benchmarks - actual values
-        for bench_name, bench_values in self.benchmark_values.items():
-            ax.plot(bench_values.index, bench_values.values, label=bench_name,
-                    linewidth=1.5, alpha=0.8, color=colors.get(bench_name, 'gray'))
+        # Plot benchmarks - actual values (filtered to same period)
+        for bench_name, bench_returns in self.benchmark_returns.items():
+            if start_date is not None or end_date is not None:
+                bench_mask = (bench_returns.index > actual_start) & (bench_returns.index <= actual_end)
+                filtered_bench_returns = bench_returns[bench_mask]
+                if len(filtered_bench_returns) > 0:
+                    cumulative = (1 + filtered_bench_returns).cumprod()
+                    filtered_bench_values = cumulative * 10000
+                    filtered_bench_values = pd.concat([
+                        pd.Series([10000], index=[actual_start]),
+                        filtered_bench_values
+                    ])
+                    ax.plot(filtered_bench_values.index, filtered_bench_values.values, label=bench_name,
+                            linewidth=1.5, alpha=0.8, color=colors.get(bench_name, 'gray'))
+            else:
+                bench_values = self.benchmark_values[bench_name]
+                ax.plot(bench_values.index, bench_values.values, label=bench_name,
+                        linewidth=1.5, alpha=0.8, color=colors.get(bench_name, 'gray'))
         
-        ax.set_title('Portfolio Value: Strategy vs Benchmarks', fontsize=14, fontweight='bold')
+        title = 'Portfolio Value: Strategy vs Benchmarks'
+        if start_date is not None or end_date is not None:
+            title += f"\n({actual_start.strftime('%Y-%m-%d')} to {actual_end.strftime('%Y-%m-%d')})"
+        ax.set_title(title, fontsize=14, fontweight='bold')
         ax.set_xlabel('Date')
         ax.set_ylabel(f'Portfolio Value ($)')
         ax.legend(loc='upper left')
         ax.grid(True, alpha=0.3)
-        ax.axhline(y=self.initial_capital, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
+        ax.axhline(y=10000, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
         
         # Format y-axis as currency
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
@@ -1185,7 +1365,12 @@ class BACKTEST:
         plt.tight_layout()
         plt.show()
     
-    def plot_detailed_analysis(self, figsize: Tuple[int, int] = (16, 12)):
+    def plot_detailed_analysis(
+        self,
+        figsize: Tuple[int, int] = (16, 12),
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ):
         """
         Plot detailed analysis charts including drawdowns, rolling metrics,
         return distribution, and weight allocation.
@@ -1194,9 +1379,22 @@ class BACKTEST:
         ----------
         figsize : Tuple[int, int], default=(16, 12)
             Figure size
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) for evaluation period. Should be a rebalance date.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive) for evaluation period.
         """
         if self.portfolio_value is None:
             raise ValueError("Run backtest first")
+        
+        # Filter data if dates provided
+        if start_date is not None or end_date is not None:
+            strategy_returns, strategy_values, actual_start, actual_end = self._filter_by_date_range(start_date, end_date)
+        else:
+            strategy_returns = self.returns
+            strategy_values = self.portfolio_value
+            actual_start = self.rebalance_dates[0]
+            actual_end = self.returns.index[-1]
         
         self._compute_benchmarks()
         
@@ -1212,18 +1410,26 @@ class BACKTEST:
         # 1. Drawdown Comparison
         ax = axes[0, 0]
         
-        cumulative = (1 + self.returns).cumprod()
+        cumulative = (1 + strategy_returns).cumprod()
         running_max = cumulative.expanding().max()
         drawdown = (cumulative - running_max) / running_max * 100
         ax.fill_between(drawdown.index, drawdown.values, 0, alpha=0.3,
                         color=colors['Strategy'], label='Strategy')
         
         for bench_name, bench_returns in self.benchmark_returns.items():
-            bench_cum = (1 + bench_returns).cumprod()
-            bench_max = bench_cum.expanding().max()
-            bench_dd = (bench_cum - bench_max) / bench_max * 100
-            ax.plot(bench_dd.index, bench_dd.values, linewidth=1, alpha=0.7,
-                    color=colors.get(bench_name, 'gray'), label=bench_name)
+            # Filter benchmark to same period
+            if start_date is not None or end_date is not None:
+                bench_mask = (bench_returns.index > actual_start) & (bench_returns.index <= actual_end)
+                filtered_bench = bench_returns[bench_mask]
+            else:
+                filtered_bench = bench_returns
+            
+            if len(filtered_bench) > 0:
+                bench_cum = (1 + filtered_bench).cumprod()
+                bench_max = bench_cum.expanding().max()
+                bench_dd = (bench_cum - bench_max) / bench_max * 100
+                ax.plot(bench_dd.index, bench_dd.values, linewidth=1, alpha=0.7,
+                        color=colors.get(bench_name, 'gray'), label=bench_name)
         
         ax.set_title('Drawdown Comparison', fontsize=12, fontweight='bold')
         ax.set_ylabel('Drawdown (%)')
@@ -1232,21 +1438,29 @@ class BACKTEST:
         
         # 2. Rolling Sharpe Ratio
         ax = axes[0, 1]
-        window = min(126, len(self.returns) // 2)
+        window = min(126, len(strategy_returns) // 2)
         
         if window >= 20:
-            rolling_mean = self.returns.rolling(window).mean() * 252
-            rolling_std = self.returns.rolling(window).std() * np.sqrt(252)
+            rolling_mean = strategy_returns.rolling(window).mean() * 252
+            rolling_std = strategy_returns.rolling(window).std() * np.sqrt(252)
             rolling_sharpe = rolling_mean / rolling_std
             ax.plot(rolling_sharpe.dropna().index, rolling_sharpe.dropna().values,
                     linewidth=1.5, color=colors['Strategy'], label='Strategy')
             
             for bench_name, bench_returns in self.benchmark_returns.items():
-                bench_roll_mean = bench_returns.rolling(window).mean() * 252
-                bench_roll_std = bench_returns.rolling(window).std() * np.sqrt(252)
-                bench_roll_sharpe = bench_roll_mean / bench_roll_std
-                ax.plot(bench_roll_sharpe.dropna().index, bench_roll_sharpe.dropna().values,
-                        linewidth=1, alpha=0.7, color=colors.get(bench_name, 'gray'), label=bench_name)
+                # Filter benchmark to same period
+                if start_date is not None or end_date is not None:
+                    bench_mask = (bench_returns.index > actual_start) & (bench_returns.index <= actual_end)
+                    filtered_bench = bench_returns[bench_mask]
+                else:
+                    filtered_bench = bench_returns
+                
+                if len(filtered_bench) > 0:
+                    bench_roll_mean = filtered_bench.rolling(window).mean() * 252
+                    bench_roll_std = filtered_bench.rolling(window).std() * np.sqrt(252)
+                    bench_roll_sharpe = bench_roll_mean / bench_roll_std
+                    ax.plot(bench_roll_sharpe.dropna().index, bench_roll_sharpe.dropna().values,
+                            linewidth=1, alpha=0.7, color=colors.get(bench_name, 'gray'), label=bench_name)
             
             ax.axhline(y=0, color='red', linestyle='--', alpha=0.5)
             ax.set_title(f'Rolling {window}-Day Sharpe Ratio', fontsize=12, fontweight='bold')
@@ -1258,11 +1472,11 @@ class BACKTEST:
         
         # 3. Return Distribution
         ax = axes[1, 0]
-        ax.hist(self.returns * 100, bins=50, edgecolor='black', alpha=0.7,
+        ax.hist(strategy_returns * 100, bins=50, edgecolor='black', alpha=0.7,
                 color=colors['Strategy'], label='Strategy')
         ax.axvline(x=0, color='red', linestyle='--', alpha=0.5)
-        ax.axvline(x=self.returns.mean() * 100, color='green', linestyle='--',
-                   label=f'Mean: {self.returns.mean()*100:.3f}%')
+        ax.axvline(x=strategy_returns.mean() * 100, color='green', linestyle='--',
+                   label=f'Mean: {strategy_returns.mean()*100:.3f}%')
         ax.set_title('Daily Return Distribution', fontsize=12, fontweight='bold')
         ax.set_xlabel('Daily Return (%)')
         ax.set_ylabel('Frequency')
@@ -1272,21 +1486,34 @@ class BACKTEST:
         # 4. Weight Allocation Over Time
         ax = axes[1, 1]
         if self.weights_history is not None and len(self.weights_history) > 0:
-            has_shorts = (self.weights_history < 0).any().any()
-            if has_shorts:
-                self.weights_history.plot(ax=ax, alpha=0.8, linewidth=1.5)
-                ax.axhline(y=0, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
-                ax.set_title('Portfolio Weight Allocation (has shorts)', fontsize=12, fontweight='bold')
+            # Filter weights to the evaluation period
+            if start_date is not None or end_date is not None:
+                weights_mask = (self.weights_history.index > actual_start) & (self.weights_history.index <= actual_end)
+                filtered_weights = self.weights_history[weights_mask]
             else:
-                self.weights_history.plot.area(ax=ax, alpha=0.7, stacked=True)
-                ax.set_title('Portfolio Weight Allocation', fontsize=12, fontweight='bold')
-            ax.set_ylabel('Weight')
-            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=7)
+                filtered_weights = self.weights_history
+            
+            if len(filtered_weights) > 0:
+                has_shorts = (filtered_weights < 0).any().any()
+                if has_shorts:
+                    filtered_weights.plot(ax=ax, alpha=0.8, linewidth=1.5)
+                    ax.axhline(y=0, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
+                    ax.set_title('Portfolio Weight Allocation (has shorts)', fontsize=12, fontweight='bold')
+                else:
+                    filtered_weights.plot.area(ax=ax, alpha=0.7, stacked=True)
+                    ax.set_title('Portfolio Weight Allocation', fontsize=12, fontweight='bold')
+                ax.set_ylabel('Weight')
+                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=7)
         
         plt.tight_layout()
         plt.show()
     
-    def plot_weights_heatmap(self, figsize: Tuple[int, int] = (14, 8)):
+    def plot_weights_heatmap(
+        self,
+        figsize: Tuple[int, int] = (14, 8),
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ):
         """
         Plot weights as a heatmap over time.
         
@@ -1294,14 +1521,41 @@ class BACKTEST:
         ----------
         figsize : Tuple[int, int], default=(14, 8)
             Figure size
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) for evaluation period. Should be a rebalance date.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive) for evaluation period.
         """
         if self.weights_history is None:
             raise ValueError("Run backtest first")
         
+        # Filter weights to the evaluation period
+        if start_date is not None or end_date is not None:
+            if start_date is not None:
+                start_date = pd.Timestamp(start_date)
+                # Find nearest rebalance date
+                valid_rebal_dates = [d for d in self.rebalance_dates if d >= start_date]
+                if not valid_rebal_dates:
+                    raise ValueError(f"No rebalance dates on or after {start_date}")
+                actual_start = valid_rebal_dates[0]
+            else:
+                actual_start = self.rebalance_dates[0]
+            
+            if end_date is not None:
+                end_date = pd.Timestamp(end_date)
+                actual_end = end_date
+            else:
+                actual_end = self.weights_history.index[-1]
+            
+            weights_mask = (self.weights_history.index >= actual_start) & (self.weights_history.index <= actual_end)
+            weights_plot_data = self.weights_history[weights_mask]
+        else:
+            weights_plot_data = self.weights_history
+        
         fig, ax = plt.subplots(figsize=figsize)
         
         # Transpose for better visualization
-        weights_plot = self.weights_history.T
+        weights_plot = weights_plot_data.T
         weights_plot.columns = [d.strftime('%Y-%m-%d') for d in weights_plot.columns]
         
         # Create heatmap
@@ -1312,7 +1566,10 @@ class BACKTEST:
                     vmin=vmin, vmax=0.5, center=0, ax=ax,
                     cbar_kws={'label': 'Weight'})
         
-        ax.set_title('Portfolio Weights Over Time', fontsize=14, fontweight='bold')
+        title = 'Portfolio Weights Over Time'
+        if start_date is not None or end_date is not None:
+            title += f"\n({actual_start.strftime('%Y-%m-%d')} to {actual_end.strftime('%Y-%m-%d')})"
+        ax.set_title(title, fontsize=14, fontweight='bold')
         ax.set_xlabel('Rebalance Date')
         ax.set_ylabel('Asset')
         
@@ -1396,17 +1653,6 @@ class BACKTEST:
         
         return fig
     
-    def list_rebalance_dates(self) -> List[pd.Timestamp]:
-        """
-        Get list of all rebalance dates that have stored optimizers.
-        
-        Returns
-        -------
-        List[pd.Timestamp]
-            Sorted list of rebalance dates
-        """
-        return sorted(self._optimizers.keys())
-    
     # ====================================================================================
     # UTILITY METHODS
     # ====================================================================================
@@ -1448,9 +1694,20 @@ class BACKTEST:
         
         return self.benchmark_weights[benchmark]
     
-    def get_trades(self) -> pd.DataFrame:
+    def get_trades(
+        self,
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ) -> pd.DataFrame:
         """
         Get trade log showing weight changes at each rebalance.
+        
+        Parameters
+        ----------
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) for evaluation period. Should be a rebalance date.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive) for evaluation period.
         
         Returns
         -------
@@ -1460,11 +1717,34 @@ class BACKTEST:
         if self.weights_history is None:
             raise ValueError("Run backtest first")
         
+        # Filter weights to the evaluation period
+        if start_date is not None or end_date is not None:
+            if start_date is not None:
+                start_date = pd.Timestamp(start_date)
+                # Find nearest rebalance date
+                valid_rebal_dates = [d for d in self.rebalance_dates if d >= start_date]
+                if not valid_rebal_dates:
+                    raise ValueError(f"No rebalance dates on or after {start_date}")
+                actual_start = valid_rebal_dates[0]
+            else:
+                actual_start = self.rebalance_dates[0]
+            
+            if end_date is not None:
+                end_date = pd.Timestamp(end_date)
+                actual_end = end_date
+            else:
+                actual_end = self.weights_history.index[-1]
+            
+            weights_mask = (self.weights_history.index >= actual_start) & (self.weights_history.index <= actual_end)
+            filtered_weights_history = self.weights_history[weights_mask]
+        else:
+            filtered_weights_history = self.weights_history
+        
         trades = []
         prev_weights = None
         
-        for date in self.weights_history.index:
-            curr_weights = self.weights_history.loc[date]
+        for date in filtered_weights_history.index:
+            curr_weights = filtered_weights_history.loc[date]
             
             for asset in self.asset_list:
                 old_w = prev_weights[asset] if prev_weights is not None else 0
@@ -1484,9 +1764,20 @@ class BACKTEST:
         
         return pd.DataFrame(trades)
     
-    def get_exposure_summary(self) -> pd.DataFrame:
+    def get_exposure_summary(
+        self,
+        start_date: Optional[Union[str, pd.Timestamp]] = None,
+        end_date: Optional[Union[str, pd.Timestamp]] = None
+    ) -> pd.DataFrame:
         """
         Get long/short/net/gross exposure summary over time.
+        
+        Parameters
+        ----------
+        start_date : str or pd.Timestamp, optional
+            Start date (exclusive) for evaluation period. Should be a rebalance date.
+        end_date : str or pd.Timestamp, optional
+            End date (inclusive) for evaluation period.
         
         Returns
         -------
@@ -1496,9 +1787,32 @@ class BACKTEST:
         if self.weights_history is None:
             raise ValueError("Run backtest first")
         
+        # Filter weights to the evaluation period
+        if start_date is not None or end_date is not None:
+            if start_date is not None:
+                start_date = pd.Timestamp(start_date)
+                # Find nearest rebalance date
+                valid_rebal_dates = [d for d in self.rebalance_dates if d >= start_date]
+                if not valid_rebal_dates:
+                    raise ValueError(f"No rebalance dates on or after {start_date}")
+                actual_start = valid_rebal_dates[0]
+            else:
+                actual_start = self.rebalance_dates[0]
+            
+            if end_date is not None:
+                end_date = pd.Timestamp(end_date)
+                actual_end = end_date
+            else:
+                actual_end = self.weights_history.index[-1]
+            
+            weights_mask = (self.weights_history.index >= actual_start) & (self.weights_history.index <= actual_end)
+            filtered_weights_history = self.weights_history[weights_mask]
+        else:
+            filtered_weights_history = self.weights_history
+        
         exposures = []
-        for date in self.weights_history.index:
-            w = self.weights_history.loc[date]
+        for date in filtered_weights_history.index:
+            w = filtered_weights_history.loc[date]
             long_exp = w[w > 0].sum()
             short_exp = -w[w < 0].sum()
             net_exp = long_exp - short_exp
