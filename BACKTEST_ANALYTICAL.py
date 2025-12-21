@@ -306,7 +306,7 @@ class BACKTEST:
         trading_days = self._close_prices.index
         
         # Filter to backtest period
-        mask = (trading_days >= self.start_date) & (trading_days < self.end_date)
+        mask = (trading_days >= self.start_date) & (trading_days <= self.end_date)
         period_days = trading_days[mask]
         
         if len(period_days) == 0:
@@ -348,7 +348,7 @@ class BACKTEST:
         
         # Get all trading days for the backtest period
         trading_days = self._close_prices.index
-        mask = (trading_days >= self.start_date) & (trading_days < self.end_date)
+        mask = (trading_days >= self.start_date) & (trading_days <= self.end_date)
         backtest_days = trading_days[mask]
         
         if len(backtest_days) == 0:
@@ -402,12 +402,29 @@ class BACKTEST:
                     verbose=False
                 )
                 
+                # Check if we should allocate to cash instead (long-only only)
+                # If expected return < risk-free rate, just hold cash
+                in_cash = False
+                if not self.allow_short_selling and optimizer.portfolio_return < rf_rate:
+                    if verbose:
+                        print(f"\n    → Expected return ({optimizer.portfolio_return:.4f}) < RF rate ({rf_rate:.4f}): Allocating to cash")
+                    # Set all risky weights to 0, cash to 1
+                    weights = pd.Series(0.0, index=self.asset_list)
+                    weights['Cash'] = 1.0
+                    in_cash = True
+                else:
+                    # Add cash weight of 0 to maintain consistent index
+                    weights['Cash'] = 0.0
+                
                 # Store optimization objects for analysis
                 self._optimization_inputs[rebal_date] = inputs
                 self._optimizers[rebal_date] = optimizer
                 
                 if verbose:
-                    print(f"✓ (μ={optimizer.portfolio_return:.2%}, σ={optimizer.portfolio_volatility:.2%})")
+                    if not in_cash:
+                        print(f"✓ (μ={optimizer.portfolio_return:.2%}, σ={optimizer.portfolio_volatility:.2%})")
+                    else:
+                        print(f"✓ (100% Cash)")
                 
             except Exception as e:
                 if verbose:
@@ -423,11 +440,14 @@ class BACKTEST:
                 # Align weights
                 aligned_prev = previous_weights.reindex(weights.index).fillna(0)
                 turnover = np.sum(np.abs(weights - aligned_prev)) / 2
-                tc = turnover * current_portfolio_value * (self.transaction_cost_bps / 10000)
+                # Only charge TC on risky asset trades (cash is frictionless)
+                risky_turnover = np.sum(np.abs(weights[weights.index != 'Cash'] - aligned_prev[aligned_prev.index != 'Cash'])) / 2
+                tc = risky_turnover * current_portfolio_value * (self.transaction_cost_bps / 10000)
                 current_portfolio_value -= tc
             else:
                 turnover = 1.0  # Initial allocation
-                tc = current_portfolio_value * (self.transaction_cost_bps / 10000)
+                risky_turnover = weights[weights.index != 'Cash'].abs().sum()
+                tc = risky_turnover * current_portfolio_value * (self.transaction_cost_bps / 10000)
                 current_portfolio_value -= tc
             
             turnover_list.append(turnover)
@@ -448,11 +468,18 @@ class BACKTEST:
             
             # Calculate returns for each day in holding period
             for day in holding_days:
-                # Get asset returns for this day
-                day_returns = self._asset_returns.loc[day, self.asset_list].fillna(0)
+                # Check if we're holding cash
+                if in_cash:
+                    # Return is the daily risk-free rate
+                    port_return = rf_rate / 252
+                else:
+                    # Get asset returns for this day (exclude Cash)
+                    risky_weights = current_weights[current_weights.index != 'Cash']
+                    day_returns = self._asset_returns.loc[day, self.asset_list].fillna(0)
+                    
+                    # Portfolio return using current (possibly drifted) weights
+                    port_return = (risky_weights * day_returns).sum()
                 
-                # Portfolio return using current (possibly drifted) weights
-                port_return = (current_weights * day_returns).sum()
                 returns_list.append(port_return)
                 
                 # Update portfolio value
@@ -463,9 +490,12 @@ class BACKTEST:
                 daily_weights_list.append(current_weights.copy())
                 
                 # Update weights based on drift
-                if abs(1 + port_return) > 1e-10:
-                    current_weights = current_weights * (1 + day_returns) / (1 + port_return)
-                    current_weights = current_weights / current_weights.sum()  # Normalize
+                if not in_cash and abs(1 + port_return) > 1e-10:
+                    risky_weights = risky_weights * (1 + day_returns) / (1 + port_return)
+                    risky_weights = risky_weights / risky_weights.sum()  # Normalize
+                    # Update current_weights with drifted risky weights, keep Cash at 0
+                    current_weights = pd.concat([risky_weights, pd.Series({'Cash': 0.0})])
+                # If in cash, weights don't drift (stay at Cash=1.0)
             
             # Store drifted weights for turnover calculation at next rebalance
             previous_weights = current_weights.copy()
@@ -537,6 +567,16 @@ class BACKTEST:
                 risk_aversion=self.risk_aversion,
                 verbose=False
             )
+            
+            # Check if we should allocate to cash instead (long-only only)
+            # If expected return < risk-free rate, just hold cash
+            if not self.allow_short_selling and optimizer.portfolio_return < rf_rate:
+                # Set all risky weights to 0, cash to 1
+                weights = pd.Series(0.0, index=self.asset_list)
+                weights['Cash'] = 1.0
+            else:
+                # Add cash weight of 0 to maintain consistent index
+                weights['Cash'] = 0.0
 
             # Store optimization objects for analysis
             self._optimization_inputs[rebal_date] = inputs
@@ -587,7 +627,7 @@ class BACKTEST:
         
         # Get all trading days for the backtest period
         trading_days = self._close_prices.index
-        mask = (trading_days >= self.start_date) & (trading_days < self.end_date)
+        mask = (trading_days >= self.start_date) & (trading_days <= self.end_date)
         backtest_days = trading_days[mask]
         
         if len(backtest_days) == 0:
@@ -613,9 +653,14 @@ class BACKTEST:
             for i, rebal_date in enumerate(self.rebalance_dates):
                 result = results_dict[rebal_date]
                 _, weights, exp_ret, exp_vol, error = result
+                in_cash = ('Cash' in weights.index and weights['Cash'] == 1.0)
                 if error is None:
-                    print(f"  [{i+1}/{len(self.rebalance_dates)}] {rebal_date.strftime('%Y-%m-%d')}: "
-                          f"✓ (μ={exp_ret:.2%}, σ={exp_vol:.2%})")
+                    if in_cash:
+                        print(f"  [{i+1}/{len(self.rebalance_dates)}] {rebal_date.strftime('%Y-%m-%d')}: "
+                              f"✓ (100% Cash - μ={exp_ret:.2%} < RF rate)")
+                    else:
+                        print(f"  [{i+1}/{len(self.rebalance_dates)}] {rebal_date.strftime('%Y-%m-%d')}: "
+                              f"✓ (μ={exp_ret:.2%}, σ={exp_vol:.2%})")
                 else:
                     print(f"  [{i+1}/{len(self.rebalance_dates)}] {rebal_date.strftime('%Y-%m-%d')}: "
                           f"✗ Error: {str(error)[:50]}...")
@@ -637,8 +682,12 @@ class BACKTEST:
             result = results_dict[rebal_date]
             _, weights, exp_ret, exp_vol, error = result
             
+            # Check if we're in cash mode
+            in_cash = ('Cash' in weights.index and weights['Cash'] == 1.0)
+            rf_rate = rf_rates[rebal_date]
+            
             # Apply turnover constraint if specified (re-optimize if needed)
-            if self.max_turnover is not None and previous_weights is not None:
+            if self.max_turnover is not None and previous_weights is not None and not in_cash:
                 # Check if turnover exceeds limit
                 aligned_prev = previous_weights.reindex(weights.index).fillna(0)
                 current_turnover = np.sum(np.abs(weights - aligned_prev)) / 2
@@ -681,11 +730,14 @@ class BACKTEST:
             if previous_weights is not None:
                 aligned_prev = previous_weights.reindex(weights.index).fillna(0)
                 turnover = np.sum(np.abs(weights - aligned_prev)) / 2
-                tc = turnover * current_portfolio_value * (self.transaction_cost_bps / 10000)
+                # Only charge TC on risky asset trades (cash is frictionless)
+                risky_turnover = np.sum(np.abs(weights[weights.index != 'Cash'] - aligned_prev[aligned_prev.index != 'Cash'])) / 2
+                tc = risky_turnover * current_portfolio_value * (self.transaction_cost_bps / 10000)
                 current_portfolio_value -= tc
             else:
                 turnover = 1.0
-                tc = current_portfolio_value * (self.transaction_cost_bps / 10000)
+                risky_turnover = weights[weights.index != 'Cash'].abs().sum()
+                tc = risky_turnover * current_portfolio_value * (self.transaction_cost_bps / 10000)
                 current_portfolio_value -= tc
             
             turnover_list.append(turnover)
@@ -706,10 +758,18 @@ class BACKTEST:
             
             # Calculate returns for each day in holding period
             for day in holding_days:
-                day_returns = self._asset_returns.loc[day, self.asset_list].fillna(0)
+                # Check if we're holding cash
+                if in_cash:
+                    # Return is the daily risk-free rate
+                    port_return = rf_rate / 252
+                else:
+                    # Get asset returns for this day (exclude Cash)
+                    risky_weights = current_weights[current_weights.index != 'Cash']
+                    day_returns = self._asset_returns.loc[day, self.asset_list].fillna(0)
+                    
+                    # Portfolio return using current (possibly drifted) weights
+                    port_return = (risky_weights * day_returns).sum()
                 
-                # Portfolio return using current (possibly drifted) weights
-                port_return = (current_weights * day_returns).sum()
                 returns_list.append(port_return)
                 current_portfolio_value *= (1 + port_return)
                 portfolio_values.append(current_portfolio_value)
@@ -718,9 +778,12 @@ class BACKTEST:
                 daily_weights_list.append(current_weights.copy())
                 
                 # Update weights based on drift
-                if abs(1 + port_return) > 1e-10:
-                    current_weights = current_weights * (1 + day_returns) / (1 + port_return)
-                    current_weights = current_weights / current_weights.sum()  # Normalize
+                if not in_cash and abs(1 + port_return) > 1e-10:
+                    risky_weights = risky_weights * (1 + day_returns) / (1 + port_return)
+                    risky_weights = risky_weights / risky_weights.sum()  # Normalize
+                    # Update current_weights with drifted risky weights, keep Cash at 0
+                    current_weights = pd.concat([risky_weights, pd.Series({'Cash': 0.0})])
+                # If in cash, weights don't drift (stay at Cash=1.0)
             
             # Store drifted weights for turnover calculation at next rebalance
             previous_weights = current_weights.copy()
