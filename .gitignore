@@ -7,3 +7,4 @@ data/ready/int_equity.xlsx
 data/ready/commodity.xlsx
 data/ready/macro_data_all.xlsx
 backtests/*
+backtests_v2/*
